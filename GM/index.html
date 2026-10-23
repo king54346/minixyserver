@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  main { display: grid; grid-template-columns: 330px 1fr; gap: 12px; padding: 12px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, select, textarea, button { font: inherit; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button.gray { background: #6b7280; border-color: #6b7280; }
+  button.red { background: #dc2626; border-color: #dc2626; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: left; }
+  tr.sel { background: #dbeafe; }
+  tbody tr { cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; }
+  .grid label { display: flex; flex-direction: column; font-size: 12px; color: #6b7280; }
+  .muted { color: #6b7280; font-size: 12px; }
+  .online { color: #16a34a; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 160px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; }
+  #players { max-height: 70vh; overflow: auto; }
+  #catalogList { max-height: 200px; overflow: auto; border: 1px solid #eee; }
+  #catalogList div { padding: 2px 6px; cursor: pointer; }
+  #catalogList div:hover { background: #eff6ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>小妖怪 GM 工具</h1>
+  <span id="status" class="muted">未连接</span>
+  <input id="pwd" type="password" placeholder="服务器 root 密码">
+  <button id="btnConnect">连接</button>
+</header>
+<main>
+  <section>
+    <h2>玩家 <button class="gray" id="btnRefresh">刷新</button></h2>
+    <div class="row"><input id="filter" placeholder="按名字 / uid 筛选" style="flex:1"></div>
+    <div id="players"><table><thead><tr><th>uid</th><th>名字</th><th>等级</th><th></th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <section>
+      <h2>角色数值 <span id="selName" class="muted">（先在左边选一个玩家）</span></h2>
+      <div class="grid" id="roleForm"></div>
+      <div class="row">
+        <button id="btnSave">保存修改</button>
+        <button class="gray" id="btnKick">踢下线</button>
+        <button class="red" id="btnPerfect">改成完美账号</button>
+        <span id="bagInfo" class="muted"></span>
+      </div>
+      <div class="muted">保存修改 / 完美账号会先把在线的玩家踢下线。完美账号会整体替换护法、装备、法术书。</div>
+    </section>
+    <section>
+      <h2>发放物品（邮件）</h2>
+      <div class="row">
+        <label>发给 <select id="mailTo"><option value="sel">选中的玩家</option><option value="all">全服所有角色</option></select></label>
+        <input id="mailTitle" placeholder="标题" value="GM 发放" style="width:160px">
+        <input id="mailText" placeholder="正文" value="请查收。" style="flex:1">
+      </div>
+      <div class="row">
+        <label>元宝 <input id="mailGold" type="number" min="0" value="0" style="width:100px"></label>
+        <label>银两 <input id="mailCash" type="number" min="0" value="0" style="width:100px"></label>
+        <label>魂值 <input id="mailSoul" type="number" min="0" value="0" style="width:100px"></label>
+      </div>
+      <div class="row">
+        <select id="catKind"><option value="">全部</option><option>道具</option><option>护法</option><option>装备</option><option>法术书</option></select>
+        <input id="catSearch" placeholder="搜物品名 / 编号（如 甘露、WP10238）" style="flex:1">
+      </div>
+      <div id="catalogList"></div>
+      <table id="mailItems"><thead><tr><th>编号</th><th>名称</th><th>数量</th><th></th></tr></thead><tbody></tbody></table>
+      <div class="row"><button id="btnMail">发送邮件</button></div>
+    </section>
+    <section><h2>日志</h2><div id="log"></div></section>
+  </div>
+</main>
+<script>
+const ROLE_FIELDS = [["gold","元宝"],["cash","银两"],["soulexp","魂值"],["friendpoint","友情点"],["grade","等级"],
+  ["exp","经验"],["vip","VIP"],["tpoint","体力"],["hpoint","活力"]];
+let players = [], catalog = [], sel = null, original = {}, mailItems = {};
+
+const $ = id => document.getElementById(id);
+function log(msg, bad) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${bad ? "✗ " : ""}${msg}\n` + $("log").textContent;
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+const nameOf = code => (catalog.find(c => c.code === code) || {}).name || code;
+
+$("btnConnect").onclick = async () => {
+  try {
+    const j = await api("/api/connect", {password: $("pwd").value});
+    $("pwd").value = "";
+    $("status").textContent = "已连接 " + j.host;
+    log("已连接服务器 " + j.host);
+    await loadPlayers();
+    catalog = await api("/api/catalog");
+    renderCatalog();
+  } catch (e) { log(e.message, true); }
+};
+$("pwd").onkeydown = e => { if (e.key === "Enter") $("btnConnect").click(); };
+
+async function loadPlayers() {
+  players = await api("/api/players") || [];
+  renderPlayers();
+}
+$("btnRefresh").onclick = () => loadPlayers().catch(e => log(e.message, true));
+$("filter").oninput = renderPlayers;
+function renderPlayers() {
+  const f = $("filter").value.trim();
+  const tb = $("players").querySelector("tbody");
+  tb.innerHTML = "";
+  for (const p of players) {
+    if (f && !String(p.uid).includes(f) && !(p.name || "").includes(f)) continue;
+    const tr = document.createElement("tr");
+    if (sel === p.uid) tr.className = "sel";
+    tr.innerHTML = `<td>${p.uid}</td><td></td><td>${p.grade}</td><td class="online">${p.online ? "在线" : ""}</td>`;
+    tr.children[1].textContent = p.name;
+    tr.onclick = () => selectPlayer(p.uid);
+    tb.appendChild(tr);
+  }
+}
+
+async function selectPlayer(uid) {
+  try {
+    const j = await api("/api/player?uid=" + uid);
+    sel = uid;
+    original = {};
+    const ro = j.role;
+    $("selName").textContent = `${ro.name}（uid ${ro.uid}${j.online ? "，在线" : ""}）`;
+    const form = $("roleForm");
+    form.innerHTML = "";
+    for (const [k, label] of ROLE_FIELDS) {
+      const v = (k === "friendpoint" ? ro.friend_point : ro[k]) ?? 0; // 角色存档里友情点的键是 friend_point
+      original[k] = v;
+      const l = document.createElement("label");
+      l.innerHTML = `${label}<input type="number" min="0" data-k="${k}">`;
+      l.querySelector("input").value = v;
+      form.appendChild(l);
+    }
+    $("bagInfo").textContent = `护法 ${j.pets ?? "-"}  装备 ${j.suits ?? "-"}  法术书 ${j.books ?? "-"}  道具格 ${j.items ?? "-"}`;
+    renderPlayers();
+  } catch (e) { log(e.message, true); }
+}
+
+$("btnSave").onclick = async () => {
+  if (!sel) return log("先选一个玩家", true);
+  const set = {};
+  for (const inp of $("roleForm").querySelectorAll("input")) {
+    const v = Number(inp.value);
+    if (v !== original[inp.dataset.k]) set[inp.dataset.k] = v;
+  }
+  if (!Object.keys(set).length) return log("没有改动");
+  try {
+    await api("/api/role", {uid: sel, set});
+    log(`uid ${sel} 已修改：${JSON.stringify(set)}`);
+    await selectPlayer(sel);
+    loadPlayers();
+  } catch (e) { log(e.message, true); }
+};
+$("btnKick").onclick = async () => {
+  if (!sel) return log("先选一个玩家", true);
+  try { await api("/api/kick", {uid: sel}); log(`uid ${sel} 已踢下线`); loadPlayers(); } catch (e) { log(e.message, true); }
+};
+$("btnPerfect").onclick = async () => {
+  if (!sel) return log("先选一个玩家", true);
+  if (!confirm(`把 uid ${sel} 改成完美账号？原有护法、装备、法术书会被整体替换。`)) return;
+  try { const j = await api("/api/perfect", {uid: sel}); log(`uid ${j.uid} 已改成完美账号`); selectPlayer(sel); loadPlayers(); }
+  catch (e) { log(e.message, true); }
+};
+
+$("catSearch").oninput = renderCatalog;
+$("catKind").onchange = renderCatalog;
+function renderCatalog() {
+  const q = $("catSearch").value.trim().toUpperCase(), kind = $("catKind").value;
+  const box = $("catalogList");
+  box.innerHTML = "";
+  let n = 0;
+  for (const c of catalog) {
+    if (kind && c.kind !== kind) continue;
+    if (q && !c.code.includes(q) && !c.name.toUpperCase().includes(q)) continue;
+    if (++n > 200) break;
+    const d = document.createElement("div");
+    d.textContent = `${c.code}  ${c.name}  [${c.kind}${c.star ? " " + c.star + "星" : ""}]`;
+    d.onclick = () => { mailItems[c.code] = (mailItems[c.code] || 0) + 1; renderMailItems(); };
+    box.appendChild(d);
+  }
+}
+function renderMailItems() {
+  const tb = $("mailItems").querySelector("tbody");
+  tb.innerHTML = "";
+  for (const [code, n] of Object.entries(mailItems)) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${code}</td><td></td><td><input type="number" min="1" style="width:90px"></td><td><button class="gray">移除</button></td>`;
+    tr.children[1].textContent = nameOf(code);
+    const inp = tr.querySelector("input");
+    inp.value = n;
+    inp.onchange = () => { mailItems[code] = Math.max(1, Number(inp.value) || 1); };
+    tr.querySelector("button").onclick = () => { delete mailItems[code]; renderMailItems(); };
+    tb.appendChild(tr);
+  }
+}
+$("btnMail").onclick = async () => {
+  const all = $("mailTo").value === "all";
+  if (!all && !sel) return log("先选一个玩家，或改成发给全服", true);
+  const body = {to: all ? 0 : sel, title: $("mailTitle").value, text: $("mailText").value,
+    gold: Number($("mailGold").value) || 0, cash: Number($("mailCash").value) || 0, soul: Number($("mailSoul").value) || 0,
+    items: mailItems};
+  if (!body.gold && !body.cash && !body.soul && !Object.keys(mailItems).length) return log("没有要发的东西", true);
+  if (all && !confirm("确定发给全服所有角色？")) return;
+  try {
+    const j = await api("/api/mail", body);
+    log(`已发送 ${j.sent} 封邮件（${all ? "全服" : "uid " + sel}）：${JSON.stringify(body.items)} 元宝${body.gold} 银两${body.cash} 魂值${body.soul}`);
+    mailItems = {};
+    renderMailItems();
+  } catch (e) { log(e.message, true); }
+};
+
+api("/api/status").then(j => {
+  if (j.connected) { $("status").textContent = "已连接 " + j.host; loadPlayers(); api("/api/catalog").then(c => { catalog = c; renderCatalog(); }); }
+}).catch(() => {});
+</script>
+</body>
+</html>
