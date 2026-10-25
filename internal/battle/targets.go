@@ -1,7 +1,5 @@
 package battle
 
-import ()
-
 // 选目标与常用查询：前阵 / 敌我、对位、相邻、伤重 / 易死、概率判定。
 
 func (b *battle) foes(u *unit) []*unit { return b.frontOf(1 - u.side) }
@@ -38,6 +36,16 @@ func (b *battle) attackable(u *unit) []*unit {
 		}
 	}
 	return out
+}
+
+// opposite 是 u 对位（同槽位）的敌方前阵存活护法，没有返回 nil（对位锁定：已死 / 为空不改选）。
+func (b *battle) opposite(u *unit) *unit {
+	for _, o := range b.foes(u) {
+		if o.slot() == u.slot() {
+			return o
+		}
+	}
+	return nil
 }
 
 // pickTarget：对位的敌人，对位已死就打槽位最靠前的。
@@ -145,6 +153,24 @@ func (b *battle) mostHurtExcept(self *unit) *unit {
 		}
 	}
 	return best
+}
+
+// sortByAtt 把 l 按攻击力从高到低排（选择交换，同攻击的先后关系不保证稳定——改成稳定排序会改变战报）。
+func sortByAtt(l []*unit) {
+	for i := range l {
+		for j := i + 1; j < len(l); j++ {
+			if l[j].att > l[i].att {
+				l[i], l[j] = l[j], l[i]
+			}
+		}
+	}
+}
+
+// pickN 从 l 里随机取至多 n 个（不重复）。
+func (b *battle) pickN(l []*unit, n int) []*unit {
+	l = append([]*unit(nil), l...)
+	b.rng.Shuffle(len(l), func(i, j int) { l[i], l[j] = l[j], l[i] })
+	return l[:min(n, len(l))]
 }
 
 func (b *battle) chance(pct int) bool { return pct > 0 && b.rng.IntN(100) < pct }

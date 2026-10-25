@@ -8,7 +8,7 @@
 
 - 存档（`internal/store`）：账号、角色各一张表；玩家玩法存档（卡牌、阵容、道具、关卡进度）整体存为 JSON 一列（结构还在频繁变动）。业务侧全部缓存在内存，每次修改立即落库。表结构即 `internal/store/sqlite.go` 里的三个 GORM 模型；启动时只建缺的表、补缺的列，不用 AutoMigrate（它在 SQLite 上会重建整张表）。
 - 静态数据：见下方「静态表」。
-- 闯关与战斗：`h_task.go`（关卡列表、开战、结算）、`internal/battle`：`battle.go`（回合流程、前后阵补位、战意、命令流输出）、`battle_skill.go`（法术 17 种目标与 13 种特效，按客户端 `magic_mgr.lua` 的公式；神通 96 族，按 `talent.lua` 描述实现）、`record.go`（战报解码与回放校验）。`TestSimulateAllGates` 用全部关卡阵容回放校验战报自洽，`TestTalentCoverage` 报告新手期神通覆盖率；`analysis/tools/fight_record.py` 可解码官方战报对照。
+- 闯关与战斗：`h_task.go`（关卡列表、开战、结算）、`internal/battle`：`battle.go`（回合流程、前后阵补位、战意、命令流输出）、`attack_action.go`（一次攻击行为的流程）、`effects.go`（扣血 / 加攻 / 结界等基本效果与命令）、`battle_status.go`（持续状态）、`swap.go`（换位 / 驱逐 / 遁让）、`swords.go`（仙剑）、`targets.go`（选目标）、`talents_*.go`（神通，按触发时机分文件，索引见 `talents.go`）、`battle_skill.go`（法术 17 种目标与 13 种特效，按客户端 `magic_mgr.lua` 的公式；神通 96 族，按 `talent.lua` 描述实现）、`record.go`（战报解码与回放校验）。`TestSimulateAllGates` 用全部关卡阵容回放校验战报自洽，`TestTalentCoverage` 报告新手期神通覆盖率；`analysis/tools/fight_record.py` 可解码官方战报对照。
 - 升级：`data/exp.json` 由 `export_tables.py` 导出——卡牌取 client2 `logic/pet_mgr.lua` 的 `_PET_UPGRADE_EXP_LIST`×星级倍率（1~100 级，与 `数据.xlsx` 一致、抓包核对过），人物取 `view/CMainView.lua` 的 `upgradeNeedExp`（满级 50）。卡牌等级 ≤ 人物等级×2。
 - 神通校准：`analysis/tools/talent_check.py` 回放官方战报，把各族神通带出的数值与攻击/上限等基数相比；描述与实测不符的以实测为准（代码里有注释）。
 - 背包：`bag.go`（道具叠放、装备/法术书、奖励表掉落编码 `前缀+编号:万分比:数量`、魂魄、回包）、`h_bag.go`（拉取、使用道具、穿脱、出售）、`box.go`（宝箱：宝箱和钥匙任一件都能开，十连 `C_OPEN_TEN_BOX`；黄金宝箱掉落分布取自抓包的 5 次十连，白银/黑铁按道具描述估计）。奖励界面不显示 `cash` 字段，银两以展示道具 20010 放进 list。关卡胜利按奖励表掉落（第一关必掉 1 张 1 星卡）。

@@ -242,11 +242,7 @@ func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 	miss := func() int64 {
 		b.show(u, attackDodge, t)
 		b.chargeUp(t) // 躲过伤害也蓄力；与受击一样 ADD_POWER 在 SUB_HP 之前
-		b.w.u8(CmdSubHP)
-		b.w.u32(attackDodge)
-		b.w.u8(1)
-		b.w.u8(t.Pos)
-		b.w.u32(0)
+		b.hpCmd(CmdSubHP, attackDodge, t, 0)
 		b.fireEnchant(u, t, 0)
 		return 0
 	}

@@ -54,32 +54,10 @@ func (b *battle) beforeAttack(u, t *unit) {
 		}
 	}
 	if k := u.tal(famRanHun); k != nil && b.chance(k.param(0)) {
-		up := u.att * int64(k.param(1)) / 100
-		// 官方战报：ACT_DO(燃魂 → 自己) → ATT_CHANGE → SUB_HP(燃魂，自己) → BLOODPOOL_IN{自己, 蓄入量}
-		b.tempUp(u, k, up)
-		in := b.loseHP(u, u, k.id, max(min(u.att/2, u.hp-5), 0)) // 生命流失，最多扣到 5（FAQ）；失去的生命蓄入本方血池
-		in += int64(float64(u.att) * k.tjX() / 100)              // 激发：额外蓄入当前攻击 $x%
-		b.pool[u.side] += in
-		b.poolBy[u.side], b.poolID[u.side] = u, k.id
-		if in > 0 {
-			b.w.u8(CmdBloodPoolIn)
-			b.w.u8(u.Pos)
-			b.w.u32(in)
-		}
+		b.onRanHun(u, k)
 	}
 	if k := u.tal(famRenSheng); k != nil {
-		n := b.raceCount(u.side, raceHuman)
-		if b.chance(k.param(0) * int(n)) {
-			foes := b.foes(u)
-			b.show(u, k.id, foes...)
-			blind := int64(20) // buff 5042 盲目2：攻击有 20% 几率无法命中
-			for _, x := range foes {
-				b.addStatus(x, stBlind, blind, 1, true, int32(k.param(2)), slotDebuff)
-				if k.tjOn() && b.chance(k.tjPct()) {
-					b.addStatus(x, stSlow, 4, 1, false, 5331, slotDebuff) // BUFF 5331「凝滞」
-				}
-			}
-		}
+		b.onRenSheng(u, k)
 	}
 	if k := u.tal(famMoSha); k != nil && b.chance(k.param(0)) {
 		b.tempUp(u, k, u.baseAtt*int64(k.param(1))*b.raceCount(u.side, raceGhost)/100)
@@ -164,23 +142,7 @@ func (b *battle) beforeAttack(u, t *unit) {
 		}
 	}
 	if k := u.tal(famPoWang); k != nil {
-		// 攻击前各有 a% 概率将对面三位护法生命上限恢复到进入战斗的初始值
-		//（Fighter.MaxHP；changeMaxHP 会把超出上限的当前生命一并压回）。
-		ts := b.facing3(u) // 对面三位 = 对位及其左右（锁定站位）
-		var hit []*unit
-		for _, x := range ts {
-			if b.chance(k.param(0)) {
-				hit = append(hit, x)
-			}
-		}
-		if len(hit) > 0 {
-			b.show(u, k.id, hit...)
-			for _, x := range hit {
-				if d := int64(x.MaxHP) - x.maxHP; d != 0 {
-					b.changeMaxHP(x, k.id, d)
-				}
-			}
-		}
+		b.onPoWang(u, k)
 	}
 	if k := u.tal(famMieFa); k != nil && (t.tal(famXianYi) != nil || t.tal(famBuQin) != nil) {
 		// 攻击时对具备仙衣 / 不侵的目标伤害提高 a%，且有同等概率清除无敌。伤害提高不是加攻击：结算伤害时乘
@@ -208,24 +170,7 @@ func (b *battle) beforeAttack(u, t *unit) {
 		u.tempAtt += n
 	}
 	if k := u.tal(famYiMingYanTian); k != nil {
-		// 全体前阵护法获得神之护3（+9% 生命上限，每次都加）；a% 概率使攻击力最高者获得战呼3。
-		b.shenhu(u, k, 5213)
-		if k.tjOn() {
-			for _, x := range b.allies(u) {
-				if b.chance(15 + k.tjPct()) {
-					b.grantRound(x, levelID(famFenShui, 3))
-					b.grantRound(x, levelID(famBaoJi, 3))
-				}
-			}
-		}
-		if b.chance(k.param(0)) {
-			allies := b.allies(u)
-			sortByAtt(allies)
-			if len(allies) > 0 {
-				b.show(u, k.id, allies[0])
-				b.zhanhu(allies[0], 5263)
-			}
-		}
+		b.onYiMingYanTian(u, k)
 	}
 	if k := u.tal(famJiuWeiXianChe); k != nil {
 		// 全体前阵护法获得狐尾（buff 参数 1，含神之护3）；双方战意差为 d 时 (120 - d×等级)% 概率触发咆哮10（战意 +5）。
@@ -237,30 +182,7 @@ func (b *battle) beforeAttack(u, t *unit) {
 		}
 	}
 	if k := u.tal(famSheHunShu); k != nil && len(u.borrowed) < 4 {
-		// 己方前排随机一名已死亡护法的第 1、2 神通各 a% 概率被吸取为临时神通（至多 4 个，死亡时移除）。
-		var dead []*unit
-		for _, x := range b.units[u.side] {
-			if !x.alive() && x.front() {
-				dead = append(dead, x)
-			}
-		}
-		if len(dead) > 0 {
-			x := dead[b.rng.IntN(len(dead))]
-			for i := 0; i < 2 && i < len(x.Talents) && len(u.borrowed) < 4; i++ {
-				g := newTalent(x.Talents[i])
-				if g == nil || u.tals[g.fam] != nil || !b.chance(k.param(0)) {
-					continue
-				}
-				b.show(u, k.id, x)
-				u.tals[g.fam] = g
-				u.borrowed = append(u.borrowed, g.fam)
-				if k.tjOn() {
-					d := int64(float64(u.maxHP) * k.tjX() / 100)
-					b.changeMaxHP(u, k.id, d)
-					b.heal(u, k.id, d)
-				}
-			}
-		}
+		b.onSheHunShu(u, k)
 	}
 }
 
@@ -802,4 +724,107 @@ func (b *battle) onHit(u, t *unit, dmg int64, kind atkKind) {
 func (b *battle) showResist(u *unit, k *talent, t *unit) bool {
 	b.show(u, k.id, t)
 	return b.resist(t, stWeak) // 法术结界 / 不侵
+}
+
+// onRanHun：攻击前——燃魂。
+func (b *battle) onRanHun(u *unit, k *talent) {
+	up := u.att * int64(k.param(1)) / 100
+	// 官方战报：ACT_DO(燃魂 → 自己) → ATT_CHANGE → SUB_HP(燃魂，自己) → BLOODPOOL_IN{自己, 蓄入量}
+	b.tempUp(u, k, up)
+	in := b.loseHP(u, u, k.id, max(min(u.att/2, u.hp-5), 0)) // 生命流失，最多扣到 5（FAQ）；失去的生命蓄入本方血池
+	in += int64(float64(u.att) * k.tjX() / 100)              // 激发：额外蓄入当前攻击 $x%
+	b.pool[u.side] += in
+	b.poolBy[u.side], b.poolID[u.side] = u, k.id
+	if in > 0 {
+		b.w.u8(CmdBloodPoolIn)
+		b.w.u8(u.Pos)
+		b.w.u32(in)
+	}
+}
+
+// onRenSheng：攻击前——人圣。
+func (b *battle) onRenSheng(u *unit, k *talent) {
+	n := b.raceCount(u.side, raceHuman)
+	if b.chance(k.param(0) * int(n)) {
+		foes := b.foes(u)
+		b.show(u, k.id, foes...)
+		blind := int64(20) // buff 5042 盲目2：攻击有 20% 几率无法命中
+		for _, x := range foes {
+			b.addStatus(x, stBlind, blind, 1, true, int32(k.param(2)), slotDebuff)
+			if k.tjOn() && b.chance(k.tjPct()) {
+				b.addStatus(x, stSlow, 4, 1, false, 5331, slotDebuff) // BUFF 5331「凝滞」
+			}
+		}
+	}
+}
+
+// onPoWang：攻击前——破妄。
+func (b *battle) onPoWang(u *unit, k *talent) {
+	// 攻击前各有 a% 概率将对面三位护法生命上限恢复到进入战斗的初始值
+	//（Fighter.MaxHP；changeMaxHP 会把超出上限的当前生命一并压回）。
+	ts := b.facing3(u) // 对面三位 = 对位及其左右（锁定站位）
+	var hit []*unit
+	for _, x := range ts {
+		if b.chance(k.param(0)) {
+			hit = append(hit, x)
+		}
+	}
+	if len(hit) > 0 {
+		b.show(u, k.id, hit...)
+		for _, x := range hit {
+			if d := int64(x.MaxHP) - x.maxHP; d != 0 {
+				b.changeMaxHP(x, k.id, d)
+			}
+		}
+	}
+}
+
+// onYiMingYanTian：攻击前——以命演天。
+func (b *battle) onYiMingYanTian(u *unit, k *talent) {
+	// 全体前阵护法获得神之护3（+9% 生命上限，每次都加）；a% 概率使攻击力最高者获得战呼3。
+	b.shenhu(u, k, 5213)
+	if k.tjOn() {
+		for _, x := range b.allies(u) {
+			if b.chance(15 + k.tjPct()) {
+				b.grantRound(x, levelID(famFenShui, 3))
+				b.grantRound(x, levelID(famBaoJi, 3))
+			}
+		}
+	}
+	if b.chance(k.param(0)) {
+		allies := b.allies(u)
+		sortByAtt(allies)
+		if len(allies) > 0 {
+			b.show(u, k.id, allies[0])
+			b.zhanhu(allies[0], 5263)
+		}
+	}
+}
+
+// onSheHunShu：攻击前——摄魂术。
+func (b *battle) onSheHunShu(u *unit, k *talent) {
+	// 己方前排随机一名已死亡护法的第 1、2 神通各 a% 概率被吸取为临时神通（至多 4 个，死亡时移除）。
+	var dead []*unit
+	for _, x := range b.units[u.side] {
+		if !x.alive() && x.front() {
+			dead = append(dead, x)
+		}
+	}
+	if len(dead) > 0 {
+		x := dead[b.rng.IntN(len(dead))]
+		for i := 0; i < 2 && i < len(x.Talents) && len(u.borrowed) < 4; i++ {
+			g := newTalent(x.Talents[i])
+			if g == nil || u.tals[g.fam] != nil || !b.chance(k.param(0)) {
+				continue
+			}
+			b.show(u, k.id, x)
+			u.tals[g.fam] = g
+			u.borrowed = append(u.borrowed, g.fam)
+			if k.tjOn() {
+				d := int64(float64(u.maxHP) * k.tjX() / 100)
+				b.changeMaxHP(u, k.id, d)
+				b.heal(u, k.id, d)
+			}
+		}
+	}
 }

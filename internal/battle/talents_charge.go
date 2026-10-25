@@ -232,14 +232,7 @@ func (b *battle) releaseCharge(u *unit, k *talent) {
 			if k.fam == famFengShen && k.tjOn() { // 封神激发：僵化前造成 $x% 攻击的土属性伤害
 				b.propertyHurt(u, x, k.id, int64(float64(u.att)*k.tjX()/100), 1)
 			}
-			if cut := min(x.mshield, u.att*int64(k.param(1))/100); cut > 0 {
-				x.mshield -= cut
-				b.w.u8(CmdMagicShield)
-				b.w.u8(2)
-				b.w.u8(1)
-				b.w.u8(x.Pos)
-				b.w.u32(cut)
-			}
+			b.cutShield(x, u.att*int64(k.param(1))/100, true)
 			if b.chance(k.param(2)) && b.addStatus(x, st, 0, 1, true, k.Buff, slotDebuff) &&
 				k.fam == famChongXing && k.tjOn() { // 宠幸激发：被捆缚目标下降当前攻击 $x%
 				b.changeAtt(x, k.id, -min(int64(float64(x.att)*k.tjX()/100), u.att/2)) // 单次不超过宠幸护法当前攻击 50%（FAQ）

@@ -277,10 +277,6 @@ func (b *battle) cutShield(x *unit, n int64, magic bool) int64 {
 		return 0
 	}
 	*s -= n
-	b.w.u8(cmd)
-	b.w.u8(2)
-	b.w.u8(1)
-	b.w.u8(x.Pos)
-	b.w.u32(n)
+	b.shieldCmd(cmd, 2, x, n)
 	return n
 }

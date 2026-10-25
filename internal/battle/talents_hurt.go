@@ -100,24 +100,6 @@ func (b *battle) leiying(src, t *unit, n int64, physical bool) bool {
 	return false
 }
 
-// dunrangTo 是遁让交换的后阵护法：后阵存活护法从左到右第一个（用户规则），跳过 skip；只剩 skip 时就是它，没有返回 nil。
-func (b *battle) dunrangTo(side int, skip *unit) *unit {
-	var first, alt *unit
-	for _, y := range b.bench(side) {
-		if y == skip {
-			if alt == nil || y.slot() < alt.slot() {
-				alt = y
-			}
-		} else if first == nil || y.slot() < first.slot() {
-			first = y
-		}
-	}
-	if first == nil {
-		return alt
-	}
-	return first
-}
-
 // fatal：n 点伤害落到 t 身上（会猎加成、结界抵消之后）会不会致命。
 func (b *battle) fatal(t *unit, n int64, physical bool) bool {
 	shield := t.mshield

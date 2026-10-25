@@ -81,6 +81,20 @@ func (b *battle) died(t *unit) {
 		b.firstSkill(t, skDeath)
 		b.deathSkillEvent(t)
 	}
+	if b.reviveOnDeath(t) { // 当场复活 / 化身的，其余死亡技不再结算
+		return
+	}
+	b.devour(t)
+	if b.buMieQu(t) {
+		return
+	}
+	b.deathEffects(t)
+	b.deathMore(t)
+}
+
+// reviveOnDeath：当场复活或化身的死亡技（不灭法身、情殇、神佑）；返回 true 表示已复活 / 化身。
+// 当场复活的死亡技是己方的，优先于对方的烈焰吞噬（devour）。
+func (b *battle) reviveOnDeath(t *unit) bool {
 	if k := t.tal(famBuMieFaShen); k != nil && t.has(stNoSoul) == nil && (t.fashenAt == 0 || b.round-t.fashenAt >= k.param(3)) {
 		// （蓄力数×a% + 剩余回合数×b%）概率满血复活，生命上限提升 c%，冷却 d 回合
 		if b.chance(t.charge*k.param(0) + (maxRounds-b.round)*k.param(1)) {
@@ -98,7 +112,7 @@ func (b *battle) died(t *unit) {
 			}
 			b.changeMaxHP(t, k.id, int64(t.MaxHP)*int64(k.param(2))/100)
 			b.relive(t, k.id, t.maxHP)
-			return
+			return true
 		}
 	}
 	if k := t.tal(famQingShang); k != nil && t.has(stNoSoul) == nil && !t.baigu {
@@ -139,7 +153,7 @@ func (b *battle) died(t *unit) {
 				if m := gamedata.Magics[baiguMagic]; m != nil {
 					t.magics = []*castable{{id: baiguMagic, lv: 5, left: maxRounds, MagicInfo: m}}
 				}
-				return
+				return true
 			}
 		}
 	}
@@ -153,9 +167,13 @@ func (b *battle) died(t *unit) {
 		b.show(t, k.id, t)
 		b.resetInitial(t, k.id) // 原地满血复活，攻击 / 生命上限都回到初始值
 		b.relive(t, k.id, t.maxHP)
-		return
+		return true
 	}
-	b.devour(t)
+	return false
+}
+
+// buMieQu：不灭躯——死亡满血复活，攻击提升，n 回合后自行死亡；激发不带锢魂与自动死亡时返回 true（其余死亡技不再结算）。
+func (b *battle) buMieQu(t *unit) bool {
 	if k := t.tal(famBuMieQu); k != nil && !t.eaten {
 		// 死亡满血复活，攻击提升 a%，n 回合后自行死亡，无法被再次复活。
 		// 官方战报：ACT_DO → ATT_CHANGE(攻击回到初始) → RELIVE → ATT_CHANGE(+a% 初始攻击) → BUFF param[2]「活尸」(255)。
@@ -173,7 +191,7 @@ func (b *battle) died(t *unit) {
 				b.huoshi(t, buff)
 			}
 			if k.tjOn() && b.chance(k.tjPct()) {
-				return // 激发：不带锢魂与自动死亡
+				return true // 激发：不带锢魂与自动死亡
 			}
 			b.setStatus(t, stNoSoul, 0, maxRounds, false, 0, 0)
 			// 自杀回合：正系（21151-21156）param[1] 是 1-6，对应 2-7 回合；
@@ -186,27 +204,13 @@ func (b *battle) died(t *unit) {
 			t.doomIn = n + 1
 		}
 	}
+	return false
+}
+
+// deathEffects：阵亡后结算的其余死亡技（魂守、火之魂、同归诀、易命、狂怒焰、咒类、群夭诀、还魂、归墟阵、归元）。
+func (b *battle) deathEffects(t *unit) {
 	if k := t.tal(famHunShou); k != nil {
-		allies := b.allies(t)
-		if len(allies) > 0 {
-			b.show(t, k.id, t)                                   // 官方战报：阵亡单位演出死亡神通，目标是自己
-			shield := k.tjBoost(t.att * int64(k.param(1)) / 100) // $r = b% 攻击
-			for _, x := range allies {
-				b.heal(x, k.id, k.tjBoost(t.maxHP*int64(k.param(0))/100)) // $o = a% 生命
-				b.addShield(x, shield, true)
-			}
-			for _, o := range b.foes(t) { // 优先由对位护法处吸取：对位失去同等数值的法术结界，至 0 为止（FAQ）
-				if o.slot() == t.slot() && o.mshield > 0 {
-					cut := min(o.mshield, shield)
-					o.mshield -= cut
-					b.w.u8(CmdMagicShield)
-					b.w.u8(2)
-					b.w.u8(1)
-					b.w.u8(o.Pos)
-					b.w.u32(cut)
-				}
-			}
-		}
+		b.onHunShou(t, k)
 	}
 	if k := t.tal(famHuoZhiHun); k != nil {
 		// 死亡：释放法术对敌方全体造成 a% 攻击的火属性伤害。官方战报：ACT_DO 指向敌方全体，SUB_HP 用神通号。
@@ -219,53 +223,17 @@ func (b *battle) died(t *unit) {
 		b.reviveLater(t, k)
 	}
 	if k := t.tal(famTongGuiJue); k != nil {
-		for _, o := range b.foes(t) {
-			if o.slot() == t.slot() {
-				b.show(t, k.id, o)                                                                                      // 官方战报：同归诀的 ACT_DO 指向对位的敌人
-				b.propertyHurt(t, o, k.id, int64(t.MaxHP)*int64(k.param(1))/100+int64(float64(t.maxHP)*k.tjX()/100), 1) // 初始上限 b% 的土属性伤害
-			}
+		if o := b.opposite(t); o != nil {
+			b.show(t, k.id, o)                                                                                      // 官方战报：同归诀的 ACT_DO 指向对位的敌人
+			b.propertyHurt(t, o, k.id, int64(t.MaxHP)*int64(k.param(1))/100+int64(float64(t.maxHP)*k.tjX()/100), 1) // 初始上限 b% 的土属性伤害
 		}
 		b.reviveLater(t, k)
 	}
 	if k := t.tal(famYiMing); k != nil {
-		var dead []*unit
-		for _, x := range b.units[t.side] {
-			if x != t && !x.alive() && x.front() && x.has(stNoSoul) == nil {
-				dead = append(dead, x)
-			}
-		}
-		if len(dead) > 0 {
-			x := dead[b.rng.IntN(len(dead))]
-			b.show(t, k.id, t)
-			b.relive(x, k.id, x.maxHP*int64(k.param(0))/100)
-			b.setStatus(x, stNoSoul, 0, maxRounds, false, 5141, slotDebuff) // 官方战报：易命复活后 BUFF 5141 锢魂
-		}
-		if k.tjOn() {
-			b.hitOpposite(t, k, int64(float64(t.maxHP)*k.tjX()/100))
-		}
-		b.reviveLater(t, k)
+		b.onYiMing(t, k)
 	}
 	if k := t.tal(famKuangNuYan); k != nil {
-		if foes := b.foes(t); len(foes) > 0 {
-			// 官方战报：ACT_DO(死者, 狂怒焰, 敌方全体)，SUB_HP 用特效法术 15159，燃烧 buff 是该级的 BuffID（燃烧N：上限 2N%）。
-			b.show(t, k.id, foes...)
-			pct := 2
-			if bi := gamedata.Buffs[k.Buff]; bi != nil && bi.Value() > 0 {
-				pct = bi.Value()
-			}
-			for _, x := range foes {
-				if x.alive() && !b.resist(x, stBurn) { // 燃烧（负面状态先于伤害结算（用户规则））：回合结束时损失上限 pct%，持续到战斗结束（可被法术结界 / 不侵 / 返火免疫）
-					b.addPoison(x, poison{from: k.id, pct: pct, left: maxRounds, buff: k.Buff, burn: true})
-					if k.tjOn() {
-						// 激发：每次释放都额外叠加一层燃烧（第一次 2 层，再释放 3 层……）——燃烧一般高值覆盖 / 刷新回合，
-						// 唯独狂怒焰激发的这层可以堆叠，各占一个图标
-						b.addBurnStack(x, poison{from: k.id, pct: pct, left: maxRounds, buff: k.Buff})
-					}
-				}
-				b.propertyHurt(t, x, fxMagic(k), t.att*int64(k.param(0))/100, 3)
-			}
-		}
-		b.reviveLater(t, k)
+		b.onKuangNuYan(t, k)
 	}
 	for _, fam := range deathCurses {
 		k := t.tal(fam)
@@ -328,25 +296,7 @@ func (b *battle) died(t *unit) {
 		}
 	}
 	if k := t.tal(famQunYaoJue); k != nil {
-		if b.chance(k.param(0)) {
-			ts := b.pickN(b.foes(t), 3)
-			if len(ts) > 0 {
-				b.show(t, k.id, ts...) // 官方战报：群夭诀的 ACT_DO 指向中招的敌方
-			}
-			for _, x := range ts { // 早夭：可分担量 = 自身上限 40%，到当前回合结束（负面状态先于伤害结算（用户规则））
-				b.addStatus(x, stZaoyao, x.maxHP*40/100, 1, false, k.Buff, slotDebuff)
-				if k.tjOn() {
-					b.propertyHurt(t, x, k.id, int64(float64(t.att)*k.tjX()/100), 1)
-				}
-			}
-		}
-		if t.has(stNoSoul) == nil && b.chance(k.param(2)) {
-			t.reviveIn = reviveDelay
-			t.revivePct = reviveHPPct
-			if n := k.param(1) - 5550; n >= 1 && n <= 4 { // 复活血量 8/16/24/32% 由 param[1]（5551-5554）隐含
-				t.revivePct = 8 * n
-			}
-		}
+		b.onQunYaoJue(t, k)
 	}
 	if k := t.tal(famHuanHun); k != nil {
 		// 死亡 a% 概率于 2 回合后复活，血量为上限的 b%（param[1] 直接是百分比）。
@@ -361,45 +311,11 @@ func (b *battle) died(t *unit) {
 		}
 	}
 	if k := t.tal(famGuiXuZhen); k != nil {
-		// 死亡：敌方全体 a% 攻击的土属性伤害，每人 BuffRate 概率捆缚 1 回合；
-		// 自身 param[2] 概率于 2 回合后复活 8/16/24/32% 上限血。
-		if foes := b.foes(t); len(foes) > 0 {
-			b.show(t, k.id, foes...)
-			for _, x := range foes {
-				if x.alive() && b.chance(k.BuffRate) {
-					b.addStatus(x, stBind, 0, 1, true, k.Buff, slotDebuff) // 负面状态先于伤害结算（用户规则）
-				}
-				b.propertyHurt(t, x, fxMagic(k), t.att*int64(k.param(0))/100+int64(float64(t.att)*k.tjX()/100), 1)
-			}
-		}
-		if t.has(stNoSoul) == nil && b.chance(k.param(2)) {
-			t.reviveIn = reviveDelay
-			if n := k.param(1) - 5550; n >= 1 && n <= 4 {
-				t.revivePct = 8 * n
-			}
-		}
+		b.onGuiXuZhen(t, k)
 	}
 	if k := t.tal(famGuiYuan); k != nil {
-		// 归元：死亡化身为火之卵（攻击 / 生命为朱雀的 a% / b%），火之卵每次行动、以及自身死亡时必放火系群法，不能普攻。
-		// 官方战报：朱雀死亡 → ACT_DO(归元 → 自己) → CHG_FIGHTER(火之卵 54004、兽族、先攻 10、满血) → BUFF 5141（锢魂，
-		// 火之卵不能再被复活）；这时不放火法。火之卵行动时 ACT_DO(17022 火之魂 → 敌方全体) + SUB_HP(17022)；
-		// 火之卵自带死亡技火之魂（21471）：死亡时 ACT_DO(21471 → 敌方全体) + SUB_HP(21471)，见上面 famHuoZhiHun。
-		if !t.egg && t.has(stNoSoul) == nil {
-			t.egg = true
-			b.show(t, k.id, t)
-			hp := int64(t.MaxHP)*int64(k.param(1))/100 + int64(float64(t.MaxHP)*k.tjX()/100)
-			att := t.baseAtt*int64(k.param(0))/100 + int64(float64(t.baseAtt)*k.tjX()/100)
-			if k.tjOn() {
-				b.grant(t, levelID(famJinHua, int(k.tjY())))
-			}
-			b.grant(t, eggDeathTalent)
-			b.grant(t, levelID(famFengMo, 10)) // 火之卵自带疯魔10（FAQ 归元）
-			t.att, t.baseAtt = att, att
-			b.transform(t, eggShape, raceBeast, eggSpeed, hp)
-			b.setStatus(t, stNoSoul, 0, maxRounds, false, 5141, slotDebuff)
-		}
+		b.onGuiYuan(t, k)
 	}
-	b.deathMore(t)
 }
 
 // deathMore 是 T5 补的死亡族（died 末尾调用）。
@@ -601,12 +517,9 @@ func lieyanChance(round int) int {
 
 // hitOpposite 让 t 的对位敌人失去 n 点生命（易命、还魂激发）。
 func (b *battle) hitOpposite(t *unit, k *talent, n int64) {
-	for _, o := range b.foes(t) {
-		if o.slot() == t.slot() {
-			b.show(t, k.id, o)
-			b.hurt(t, o, k.id, n, false)
-			return
-		}
+	if o := b.opposite(t); o != nil {
+		b.show(t, k.id, o)
+		b.hurt(t, o, k.id, n, false)
 	}
 }
 
@@ -626,5 +539,131 @@ func (b *battle) eggFire(u *unit, id int32) {
 	b.show(u, id, foes...)
 	for _, x := range foes {
 		b.propertyHurt(u, x, eggMagic, u.att, 3)
+	}
+}
+
+// onHunShou：阵亡——魂守。
+func (b *battle) onHunShou(t *unit, k *talent) {
+	allies := b.allies(t)
+	if len(allies) > 0 {
+		b.show(t, k.id, t)                                   // 官方战报：阵亡单位演出死亡神通，目标是自己
+		shield := k.tjBoost(t.att * int64(k.param(1)) / 100) // $r = b% 攻击
+		for _, x := range allies {
+			b.heal(x, k.id, k.tjBoost(t.maxHP*int64(k.param(0))/100)) // $o = a% 生命
+			b.addShield(x, shield, true)
+		}
+		if o := b.opposite(t); o != nil { // 优先由对位护法处吸取：对位失去同等数值的法术结界，至 0 为止（FAQ）
+			b.cutShield(o, shield, true)
+		}
+	}
+}
+
+// onYiMing：阵亡——易命。
+func (b *battle) onYiMing(t *unit, k *talent) {
+	var dead []*unit
+	for _, x := range b.units[t.side] {
+		if x != t && !x.alive() && x.front() && x.has(stNoSoul) == nil {
+			dead = append(dead, x)
+		}
+	}
+	if len(dead) > 0 {
+		x := dead[b.rng.IntN(len(dead))]
+		b.show(t, k.id, t)
+		b.relive(x, k.id, x.maxHP*int64(k.param(0))/100)
+		b.setStatus(x, stNoSoul, 0, maxRounds, false, 5141, slotDebuff) // 官方战报：易命复活后 BUFF 5141 锢魂
+	}
+	if k.tjOn() {
+		b.hitOpposite(t, k, int64(float64(t.maxHP)*k.tjX()/100))
+	}
+	b.reviveLater(t, k)
+}
+
+// onKuangNuYan：阵亡——狂怒焰。
+func (b *battle) onKuangNuYan(t *unit, k *talent) {
+	if foes := b.foes(t); len(foes) > 0 {
+		// 官方战报：ACT_DO(死者, 狂怒焰, 敌方全体)，SUB_HP 用特效法术 15159，燃烧 buff 是该级的 BuffID（燃烧N：上限 2N%）。
+		b.show(t, k.id, foes...)
+		pct := 2
+		if bi := gamedata.Buffs[k.Buff]; bi != nil && bi.Value() > 0 {
+			pct = bi.Value()
+		}
+		for _, x := range foes {
+			if x.alive() && !b.resist(x, stBurn) { // 燃烧（负面状态先于伤害结算（用户规则））：回合结束时损失上限 pct%，持续到战斗结束（可被法术结界 / 不侵 / 返火免疫）
+				b.addPoison(x, poison{from: k.id, pct: pct, left: maxRounds, buff: k.Buff, burn: true})
+				if k.tjOn() {
+					// 激发：每次释放都额外叠加一层燃烧（第一次 2 层，再释放 3 层……）——燃烧一般高值覆盖 / 刷新回合，
+					// 唯独狂怒焰激发的这层可以堆叠，各占一个图标
+					b.addBurnStack(x, poison{from: k.id, pct: pct, left: maxRounds, buff: k.Buff})
+				}
+			}
+			b.propertyHurt(t, x, fxMagic(k), t.att*int64(k.param(0))/100, 3)
+		}
+	}
+	b.reviveLater(t, k)
+}
+
+// onQunYaoJue：阵亡——群夭诀。
+func (b *battle) onQunYaoJue(t *unit, k *talent) {
+	if b.chance(k.param(0)) {
+		ts := b.pickN(b.foes(t), 3)
+		if len(ts) > 0 {
+			b.show(t, k.id, ts...) // 官方战报：群夭诀的 ACT_DO 指向中招的敌方
+		}
+		for _, x := range ts { // 早夭：可分担量 = 自身上限 40%，到当前回合结束（负面状态先于伤害结算（用户规则））
+			b.addStatus(x, stZaoyao, x.maxHP*40/100, 1, false, k.Buff, slotDebuff)
+			if k.tjOn() {
+				b.propertyHurt(t, x, k.id, int64(float64(t.att)*k.tjX()/100), 1)
+			}
+		}
+	}
+	if t.has(stNoSoul) == nil && b.chance(k.param(2)) {
+		t.reviveIn = reviveDelay
+		t.revivePct = reviveHPPct
+		if n := k.param(1) - 5550; n >= 1 && n <= 4 { // 复活血量 8/16/24/32% 由 param[1]（5551-5554）隐含
+			t.revivePct = 8 * n
+		}
+	}
+}
+
+// onGuiXuZhen：阵亡——归墟阵。
+func (b *battle) onGuiXuZhen(t *unit, k *talent) {
+	// 死亡：敌方全体 a% 攻击的土属性伤害，每人 BuffRate 概率捆缚 1 回合；
+	// 自身 param[2] 概率于 2 回合后复活 8/16/24/32% 上限血。
+	if foes := b.foes(t); len(foes) > 0 {
+		b.show(t, k.id, foes...)
+		for _, x := range foes {
+			if x.alive() && b.chance(k.BuffRate) {
+				b.addStatus(x, stBind, 0, 1, true, k.Buff, slotDebuff) // 负面状态先于伤害结算（用户规则）
+			}
+			b.propertyHurt(t, x, fxMagic(k), t.att*int64(k.param(0))/100+int64(float64(t.att)*k.tjX()/100), 1)
+		}
+	}
+	if t.has(stNoSoul) == nil && b.chance(k.param(2)) {
+		t.reviveIn = reviveDelay
+		if n := k.param(1) - 5550; n >= 1 && n <= 4 {
+			t.revivePct = 8 * n
+		}
+	}
+}
+
+// onGuiYuan：阵亡——归元。
+func (b *battle) onGuiYuan(t *unit, k *talent) {
+	// 归元：死亡化身为火之卵（攻击 / 生命为朱雀的 a% / b%），火之卵每次行动、以及自身死亡时必放火系群法，不能普攻。
+	// 官方战报：朱雀死亡 → ACT_DO(归元 → 自己) → CHG_FIGHTER(火之卵 54004、兽族、先攻 10、满血) → BUFF 5141（锢魂，
+	// 火之卵不能再被复活）；这时不放火法。火之卵行动时 ACT_DO(17022 火之魂 → 敌方全体) + SUB_HP(17022)；
+	// 火之卵自带死亡技火之魂（21471）：死亡时 ACT_DO(21471 → 敌方全体) + SUB_HP(21471)，见上面 famHuoZhiHun。
+	if !t.egg && t.has(stNoSoul) == nil {
+		t.egg = true
+		b.show(t, k.id, t)
+		hp := int64(t.MaxHP)*int64(k.param(1))/100 + int64(float64(t.MaxHP)*k.tjX()/100)
+		att := t.baseAtt*int64(k.param(0))/100 + int64(float64(t.baseAtt)*k.tjX()/100)
+		if k.tjOn() {
+			b.grant(t, levelID(famJinHua, int(k.tjY())))
+		}
+		b.grant(t, eggDeathTalent)
+		b.grant(t, levelID(famFengMo, 10)) // 火之卵自带疯魔10（FAQ 归元）
+		t.att, t.baseAtt = att, att
+		b.transform(t, eggShape, raceBeast, eggSpeed, hp)
+		b.setStatus(t, stNoSoul, 0, maxRounds, false, 5141, slotDebuff)
 	}
 }
