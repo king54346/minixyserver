@@ -122,9 +122,14 @@ func TestBag(t *testing.T) {
 	pet := p.petAtFightPos(1)
 	att0, _ := p.petStats(pet)
 	c.sendExt("ITEM_PTO.C_SUIT_ON", xym.Msg{"fight_pos": 1, "itemnum": suit.ItemNum})
-	got = c.until(t, "PET_PTO.S_UPDATE_PET")
-	if got["ITEM_PTO.S_WEAR_SUIT"] == nil {
-		t.Fatal("no S_WEAR_SUIT")
+	// 穿脱后也回 S_SEND_LINEUP：客户端的多套阵容数据要跟着更新，否则切换阵容时把旧装备存回来（装备「自己掉了」）
+	got = c.until(t, "LINEUP_PTO.S_SEND_LINEUP")
+	if got["ITEM_PTO.S_WEAR_SUIT"] == nil || got["PET_PTO.S_UPDATE_PET"] == nil {
+		t.Fatal("no S_WEAR_SUIT / S_UPDATE_PET")
+	}
+	if info := got["LINEUP_PTO.S_SEND_LINEUP"]["lineups"].([]xym.Msg)[0]["info"].([]xym.Msg)[0]; info["spos1"] != int64(suit.Pos) &&
+		info["spos2"] != int64(suit.Pos) && info["spos3"] != int64(suit.Pos) {
+		t.Fatalf("lineup gear not updated: %v", info)
 	}
 	att1, _ := p.petStats(pet)
 	if want := att0 + int32(gamedata.Suits[attSuit].Bonus(suit.Grade)); att1 != want || want == att0 {
@@ -137,7 +142,7 @@ func TestBag(t *testing.T) {
 		t.Fatal("selling worn suit should be refused")
 	}
 	c.sendExt("ITEM_PTO.C_SUIT_OFF", xym.Msg{"fight_pos": 1, "wear_pos": suitSlot[gamedata.Suits[attSuit].Kind] + 1})
-	c.until(t, "PET_PTO.S_UPDATE_PET")
+	c.until(t, "LINEUP_PTO.S_SEND_LINEUP")
 	if a, _ := p.petStats(pet); a != att0 {
 		t.Fatalf("att after off %d, want %d", a, att0)
 	}

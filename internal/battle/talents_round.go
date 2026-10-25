@@ -192,10 +192,7 @@ func (b *battle) roundStart(u *unit) {
 	if k := u.tal(famShuiZhiXing); k != nil {
 		// 对面三位里有攻击高于自己的：各吸取其 a% 攻击，本回合获得护盾 / 疯魔（参数 4、5）；
 		// 全都低于自己：本回合获得恃强 / 暴击（参数 6、7）。
-		var opp []*unit
-		if o := b.pickTarget(u); o != nil {
-			opp = append([]*unit{o}, b.adjacent(o)...)
-		}
+		opp := b.facing3(u) // 对面三位 = 对位及其左右（锁定站位，对位已死也不改选）
 		var higher []*unit
 		for _, x := range opp {
 			if x.att > u.att && x.tals[famShuiZhiXing] == nil { // 另一个水之形不计入比较与吸取（FAQ）

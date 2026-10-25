@@ -68,6 +68,7 @@ type battle struct {
 	skills     map[string]int
 	round      int
 	actor      *unit    // 最近一次演出的单位（回复效果类队长技按它算施治者）
+	acting     *unit    // 正在行动的单位（act）：行动中被挂上的「下次行动后清除」状态留到它下次行动后
 	pierce     bool     // 本次 hurt 是生命流失：不经结界（loseHP 设置）
 	lastDealt  int64    // 上一次 hurt 的伤害值（结界抵消后、未按剩余血量截断；吸血 / 血气按它算）
 	pool       [2]int64 // 血池（燃魂失去的生命）
@@ -328,7 +329,9 @@ func (b *battle) finish(win bool) {
 }
 
 func (b *battle) act(u *unit) {
+	b.acting = u
 	defer func() {
+		b.acting = nil
 		if u.alive() {
 			b.tickStatus(u, true)
 		} // 行动中阵亡的状态已在 died → leaveClear 里清掉（锢魂保留）

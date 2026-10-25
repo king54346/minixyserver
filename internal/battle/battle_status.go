@@ -63,6 +63,9 @@ type status struct {
 	slot     int
 	src      *unit // 嘲讽来源
 	foe      bool  // 敌方施加的（addStatus）：负面状态，可被清除类效果移除
+	// fresh：行动中敌方挂到行动者自己身上的「下次行动后清除」负面状态（如攻击蛟魔王被寒冰甲僵化 / 激发捆缚）——这次行动
+	// 结束时不算，到它下一次行动后才清除（之前当场就被清掉，等于没生效）
+	fresh bool
 }
 
 // addStatus 是敌方施加状态：负面效果先过不侵 / 分水的抵抗，返回是否上了。
@@ -73,6 +76,7 @@ func (b *battle) addStatus(t *unit, key stKey, val int64, left int, byAction boo
 	b.setStatus(t, key, val, left, byAction, buff, slot)
 	if s := t.status[key]; s != nil {
 		s.foe = true
+		s.fresh = byAction && b.acting == t
 	}
 	return true
 }
@@ -246,7 +250,7 @@ func (b *battle) leaveClear(t *unit, dead bool) {
 }
 
 // benchClear 是进入后阵时清除的负面状态。
-var benchClear = []stKey{stBlind, stConfuse, stBind, stSilence, stNoHeal, stWeak, stZaoyao, stStiff, stTaunt, stSlow, stZhanhu}
+var benchClear = []stKey{stBlind, stConfuse, stBind, stSilence, stNoHeal, stWeak, stZaoyao, stStiff, stTaunt, stSlow, stZhanhu, stHidden}
 
 // tickStatus：byAction=true 在单位行动后调用，false 在回合结束时调用。
 func (b *battle) tickStatus(t *unit, byAction bool) {
@@ -258,6 +262,10 @@ func (b *battle) tickStatus(t *unit, byAction bool) {
 	for _, key := range keys {
 		s := t.status[key]
 		if s == nil || s.byAction != byAction {
+			continue
+		}
+		if byAction && s.fresh {
+			s.fresh = false
 			continue
 		}
 		if s.left--; s.left <= 0 {
@@ -296,11 +304,24 @@ func (b *battle) quzhuPick(t *unit) *unit {
 	return bn[b.rng.IntN(len(bn))]
 }
 
-// quzhu：[驱逐] t，换上 x（驱逐、芭蕉扇激发共用）。换上来的死者留在前阵，回合开始由后阵补位。
+// quzhu：[驱逐] t，换上 x（驱逐、神威、芭蕉扇及其激发、脱帽退敌共用）。换上来的死者留在前阵，回合开始由后阵补位；
+// 换上来的活人被【捆缚】（用户规则：驱逐 / 换位上来的卡无法行动，下次行动后清除）。
 func (b *battle) quzhu(t, x *unit) {
 	b.swap(t, x)
 	if !x.alive() {
 		x.gone = false
+	}
+	b.bindEntered(x)
+}
+
+// bindEntered：被驱逐 / 换位法术从后阵换到前阵的护法【捆缚】（入阵神通照常发动；捆缚下次行动后清除）。
+func (b *battle) bindEntered(x *unit) {
+	if !x.alive() || !x.front() {
+		return
+	}
+	b.setStatus(x, stBind, 0, 1, true, qkxBindBuff, slotDebuff)
+	if s := x.status[stBind]; s != nil {
+		s.foe = true
 	}
 }
 

@@ -147,6 +147,10 @@ func (p *Player) playerTeam(m xym.Msg) ([]*battle.Fighter, []*Pet) { return p.pl
 
 // playerTeamWith 同 playerTeam，helper 非空时 fight_pos 9 放援助护法（helper.go；不进 pets，不加经验）。
 func (p *Player) playerTeamWith(m xym.Msg, helper *helperCard) ([]*battle.Fighter, []*Pet) {
+	if helper != nil && helper.Fighter != nil {
+		p.helperNames = []string{helper.Fighter.Name} // 援护参与缘分判定（用户规则）
+		defer func() { p.helperNames = nil }()
+	}
 	var team []*battle.Fighter
 	var pets []*Pet
 	for i := 1; i <= battle.FightSlots; i++ {

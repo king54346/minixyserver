@@ -379,7 +379,7 @@ func onTTFight(s *Session, p *Player, m xym.Msg) {
 	r1, r2 := battle.CloneTeam(team1), battle.CloneTeam(team2)
 	res := s.simulate(p, team1, team2, [2]int32{p.leaderSkill(), foe.Leader}, foe.Zf, s.actRng())
 	rid := "tianti:" + strconv.FormatInt(recordSeq.Add(1), 10)
-	s.fightRecord(rid, foe.Name, foe.Grade, r1, r2, res.Record)
+	s.fightRecordW(rid, foe.Name, foe.Grade, foe.W, r1, r2, res.Record)
 	p.track(evTianti, 1)
 	p.saveLog(s)
 	gold := int32(ttLoseGold)

@@ -58,7 +58,17 @@ func (s *Session) send(main byte, body []byte) {
 	}
 	select {
 	case s.sendCh <- b:
+		return
 	default:
+	}
+	// 队列满（客户端一下点很快、来不及收，如连点培养）：等写协程腾出位置，不再立刻断线（用户报：培养点快了就卡死退出）；
+	// 真的一直写不出去才断
+	t := time.NewTimer(writeTimeout)
+	defer t.Stop()
+	select {
+	case s.sendCh <- b:
+	case <-s.closing:
+	case <-t.C:
 		slog.Warn("send queue full, closing session", "sess", s.id)
 		s.Close()
 	}

@@ -148,9 +148,9 @@ func (b *battle) propertyHurt(u, t *unit, id int32, n int64, kind int) int64 {
 	// 遁让：属性伤害超出上限 a% 时，b% 概率与后场护法交换并躲过
 	// 遁让是免除伤害后与后阵换位：无敌时本来就不受伤，不发动
 	if k := t.tal(famDunRang); k != nil && t.front() && !b.invincible(t) && n*100 > t.maxHP*int64(k.param(0)) && b.chance(k.param(1)) {
-		if bn := b.bench(t.side); len(bn) > 0 {
+		if to := b.dunrangTo(t.side, nil); to != nil { // 后阵从左到右
 			b.show(t, k.id, t)
-			b.swap(t, bn[b.rng.IntN(len(bn))])
+			b.swap(t, to)
 			if k.tjOn() && u != nil && u.alive() { // 遁让激发：伤害来源流失 $x% 触发值的生命（生命流失）
 				b.loseHP(t, u, k.id, int64(float64(n)*k.tjX()/100))
 			}
@@ -367,6 +367,15 @@ func (b *battle) spEffect(u, t *unit, id int32, sp int, spVal int64) {
 	case 7: // 清除：a% 几率移除目标身上的所有负面状态（八九玄功、时光回溯…；原来只清了中毒 / 燃烧）
 		if b.chance(int(spVal)) {
 			b.clearAllDebuffs(t)
+		}
+	case 8: // 换位（大鹏展翅、放下屠刀、入剑诀、狂风、风鹏正举）：a% 概率令目标与其后阵随机一名存活护法换位，
+		// 换上来的护法被捆缚（用户规则）
+		if t.front() && b.chance(int(spVal)) {
+			if bn := b.bench(t.side); len(bn) > 0 {
+				x := bn[b.rng.IntN(len(bn))]
+				b.swap(t, x)
+				b.bindEntered(x)
+			}
 		}
 	case 10: // 物理结界
 		b.addShield(t, u.maxHP*spVal/100, false)

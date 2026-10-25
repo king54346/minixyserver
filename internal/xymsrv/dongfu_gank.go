@@ -316,7 +316,7 @@ func (s *Session) gankFight(p *Player, typ string, help bool) {
 	r1, r2 := battle.CloneTeam(team1), battle.CloneTeam(team2)
 	res := s.simulate(p, team1, team2, [2]int32{p.leaderSkill(), foe.Leader}, foe.Zf, s.actRng())
 	alive, _ := battle.Survivors(r1, r2, res.Record)
-	s.fightRecord(strconv.FormatInt(recordSeq.Add(1), 10), foe.Name, foe.Grade, r1, r2, res.Record)
+	s.fightRecordW(strconv.FormatInt(recordSeq.Add(1), 10), foe.Name, foe.Grade, foe.W, r1, r2, res.Record)
 	var stolen struct {
 		from *Dongfu
 		n    int32

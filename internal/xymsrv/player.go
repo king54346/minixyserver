@@ -62,6 +62,8 @@ type Player struct {
 	HelperUsed   map[int32]int64 `json:"helper_used,omitempty"` // 援助：借用过的玩家 -> 借用时刻（30 分钟冷却，helper.go）
 
 	role *Role // 进游戏时设置（人物等级等；不存档）
+	// helperNames：本场战斗借来的援护（援助护法）的名字，算缘分时当作在阵上（playerTeamWith 设置，打完清掉；不存档）
+	helperNames []string
 }
 
 // grade 是人物等级（未进游戏时为 0）。

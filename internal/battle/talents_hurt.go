@@ -89,13 +89,33 @@ func (b *battle) leiying(src, t *unit, n int64, physical bool) bool {
 		x.leiying++
 		b.show(x, k.id, t)
 		b.hurt(src, x, k.id, n, physical)
-		if bn := b.bench(t.side); len(bn) > 0 && t.alive() {
+		// 触发的遁让照遁让本身的规则（dunrangTo：后阵从左到右）；代承伤害的雷震子不算在内（用户报：每次都和后阵的
+		// 雷震子互换），后阵只剩雷震子时才和它换
+		if to := b.dunrangTo(t.side, x); to != nil && t.alive() {
 			b.show(t, t.tals[famDunRang].id, t)
-			b.swap(t, bn[b.rng.IntN(len(bn))])
+			b.swap(t, to)
 		}
 		return true
 	}
 	return false
+}
+
+// dunrangTo 是遁让交换的后阵护法：后阵存活护法从左到右第一个（用户规则），跳过 skip；只剩 skip 时就是它，没有返回 nil。
+func (b *battle) dunrangTo(side int, skip *unit) *unit {
+	var first, alt *unit
+	for _, y := range b.bench(side) {
+		if y == skip {
+			if alt == nil || y.slot() < alt.slot() {
+				alt = y
+			}
+		} else if first == nil || y.slot() < first.slot() {
+			first = y
+		}
+	}
+	if first == nil {
+		return alt
+	}
+	return first
 }
 
 // fatal：n 点伤害落到 t 身上（会猎加成、结界抵消之后）会不会致命。

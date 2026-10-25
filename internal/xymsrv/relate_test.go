@@ -90,3 +90,26 @@ func TestRelateReplaceName(t *testing.T) {
 		t.Fatalf("with 旃檀功德佛 %.3f, want 1.10", r)
 	}
 }
+
+// TestRelateHelper：武则天「吾皇万岁」——借来的援护李世民也算上阵；只在本场战斗里算（helperNames）。
+func TestRelateHelper(t *testing.T) {
+	p := newPlayer(1)
+	lu := p.lineup(p.FightNo)
+	for _, sl := range lu.Slots {
+		sl.Pet = 0
+	}
+	w := p.addPet(15036)
+	lu.Slots[0].Pet = w.BagPos
+	pi := gamedata.Pets[15036]
+	if r := p.relateRatio(pi, 1, false); r != 1 {
+		t.Fatalf("alone %.3f", r)
+	}
+	p.helperNames = []string{"李世民"}
+	if r := p.relateRatio(pi, 1, false); math.Abs(r-1.10) > 1e-9 {
+		t.Fatalf("with helper 李世民 %.3f, want 1.10", r)
+	}
+	lu.Slots[1].Pet = p.addPet(petTypeByName(t, "女王")).BagPos
+	if r := p.relateRatio(pi, 1, false); math.Abs(r-1.21) > 1e-9 {
+		t.Fatalf("helper 李世民 + 女王 %.3f, want 1.21", r)
+	}
+}
