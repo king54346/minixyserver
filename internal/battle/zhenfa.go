@@ -132,11 +132,7 @@ func (b *battle) zfSync(u *unit) {
 				cmd, n = CmdSubHP, -dh
 			}
 			u.hp = hp
-			b.w.u8(cmd)
-			b.w.u32(0)
-			b.w.u8(1)
-			b.w.u8(u.Pos)
-			b.w.u32(n)
+			b.hpCmd(cmd, 0, u, n)
 		}
 		if d < 0 {
 			b.zfMaxHP(u, d)

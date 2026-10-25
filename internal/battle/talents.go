@@ -6,11 +6,13 @@ import (
 	"turnrpg/internal/gamedata"
 )
 
-// 神通按触发时机分文件实现：
+// 神通按触发时机分文件实现（引擎本身：battle.go 回合流程、attack_action.go 攻击行为、effects.go 扣血 / 加攻等基本效果、
+// battle_status.go 状态、swap.go 换位 / 驱逐、swords.go 仙剑、targets.go 选目标）：
 //
 //	talents_attack.go  攻击前 / 攻击后 / 受击（beforeAttack、selfAfterAttack、attackEffects、followUps、onHit；流程见 attack_action.go）
 //	talents_round.go   回合开始 / 回合结束、暴走（roundStart、roundEnd、rampage）
 //	talents_enter.go   入阵（enter）
+//	talents_open.go    开场（battleStart、afterOpening、火炮之术装弹）
 //	talents_death.go   死亡、复活倒计时（died、pendingRevive）
 //	talents_charge.go  蓄力满后释放（releaseCharge）
 //	talents_hurt.go    受到伤害时：属性易伤 / 减免、攻击减伤、伤害转移与代承（propertyTaken、attackTaken、beforeHurt）

@@ -14,6 +14,24 @@ func (w *recordWriter) u8(v int) { w.b = append(w.b, byte(v)) }
 
 func (w *recordWriter) u32(v int64) { w.b = binary.LittleEndian.AppendUint32(w.b, uint32(v)) }
 
+// hpCmd 输出单个目标的生命变化命令（SUB_HP / ADD_HP：招式号、1 个目标、站位、数值）。
+func (b *battle) hpCmd(cmd int, id int32, t *unit, n int64) {
+	b.w.u8(cmd)
+	b.w.u32(int64(id))
+	b.w.u8(1)
+	b.w.u8(t.Pos)
+	b.w.u32(n)
+}
+
+// shieldCmd 输出单个目标的结界变化命令（SHIELD / MAGIC_SHIELD：op 1 增加、2 减少，1 个目标、站位、数值）。
+func (b *battle) shieldCmd(cmd, op int, t *unit, n int64) {
+	b.w.u8(cmd)
+	b.w.u8(op)
+	b.w.u8(1)
+	b.w.u8(t.Pos)
+	b.w.u32(n)
+}
+
 // selfActFamilies：官方战报里这些族的技能动作只指向施放者自己（效果再作用到队友 / 敌人身上）。
 // 指向队友时客户端不播入阵 / 回合技动画（蟠桃宴、道之始、甘露…），统一在 show 里改成自己。
 // 依据：session-01/02 全部 ACT_DO 按目标分类（analysis 里统计，见 TestActDoTargets）。
@@ -126,11 +144,7 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 		abs := min(*shield, n)
 		*shield -= abs
 		n -= abs
-		b.w.u8(cmd)
-		b.w.u8(2) // op 2 = 减少
-		b.w.u8(1)
-		b.w.u8(t.Pos)
-		b.w.u32(abs)
+		b.shieldCmd(cmd, 2, t, abs) // op 2 = 减少
 	}
 	if !pierce {
 		n = b.moonTransfer(src, t, n)
@@ -164,11 +178,7 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 			}
 		}()
 	}
-	b.w.u8(CmdSubHP)
-	b.w.u32(int64(id))
-	b.w.u8(1)
-	b.w.u8(t.Pos)
-	b.w.u32(n)
+	b.hpCmd(CmdSubHP, id, t, n)
 	t.hp -= n
 	if !t.alive() {
 		b.w.u8(CmdDie)
@@ -236,11 +246,7 @@ func (b *battle) heal(t *unit, id int32, n int64) int64 {
 		return 0
 	}
 	t.hp += n
-	b.w.u8(CmdAddHP)
-	b.w.u32(int64(id))
-	b.w.u8(1)
-	b.w.u8(t.Pos)
-	b.w.u32(n)
+	b.hpCmd(CmdAddHP, id, t, n)
 	return n
 }
 
@@ -301,11 +307,7 @@ func (b *battle) changeMaxHP(t *unit, id int32, delta int64) {
 	b.w.u32(n)
 	if over := t.hp - t.maxHP; over > 0 {
 		t.hp = t.maxHP
-		b.w.u8(CmdSubHP)
-		b.w.u32(int64(id))
-		b.w.u8(1)
-		b.w.u8(t.Pos)
-		b.w.u32(over)
+		b.hpCmd(CmdSubHP, id, t, over)
 	}
 }
 
@@ -324,11 +326,7 @@ func (b *battle) addShield(t *unit, n int64, magic bool) {
 		}
 		t.shield += n
 	}
-	b.w.u8(cmd)
-	b.w.u8(1)
-	b.w.u8(1)
-	b.w.u8(t.Pos)
-	b.w.u32(n)
+	b.shieldCmd(cmd, 1, t, n)
 }
 
 // addZY 改一方战意，输出 ZHANYI（side 1 我方 2 敌方）。

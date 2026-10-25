@@ -14,80 +14,6 @@ const (
 	hiddenBuff  = 5111 // 隐身
 )
 
-// weakenPct 是特定弱化（助人海星，29001-29043）使敌人攻击力临时降低的 %（数值只在描述里，按描述抄）。
-var weakenPct = map[int32]int64{
-	29001: 1, 29002: 2, 29003: 3, 29004: 4, 29005: 5, 29006: 6, 29007: 7, 29008: 8, 29009: 9, 29010: 10,
-	29011: 11, 29012: 20, 29013: 30, 29014: 40, 29015: 50,
-	29021: 1, 29022: 3, 29023: 5, 29024: 6, 29025: 8, 29026: 10, 29027: 20, 29028: 30, 29029: 40, 29030: 50,
-	29031: 1, 29032: 2, 29033: 3, 29034: 4, 29035: 5, 29036: 6, 29037: 7, 29038: 9, 29039: 18, 29040: 27,
-	29041: 36, 29042: 45, 29043: 54,
-}
-
-// afterOpening 在开场入阵之后：十日圣母献祭自身，生命降至 1（在后阵也献祭；官方战报 SUB_HP = hp-1）。
-func (b *battle) afterOpening() {
-	for side := range b.units {
-		for _, u := range b.units[side] {
-			if k := u.tal(famShiRiShengMu); k != nil && !u.sacDone && u.alive() {
-				u.sacDone = true
-				if n := u.hp - 1; n > 0 {
-					b.show(u, k.id, u)
-					u.sacrificed = b.hurt(u, u, k.id, n, false)
-				}
-			}
-		}
-	}
-}
-
-// battleStart 在开场入阵之前：特定弱化使敌方全体攻击力降低 x%（整场）。
-// 描述限定「12-5-10 等关卡的敌人」，战斗里没有关卡号，按带了就生效处理；
-// 「气甲、仙衣、分水弱化为 n 级」不做。
-func (b *battle) battleStart() {
-	for side := range b.units {
-		for _, u := range b.units[side] {
-			if k := u.tals[famShiXinLongZhou]; k != nil && k.tjOn() && u.tals[famFanJi] == nil {
-				b.grant(u, levelID(famFanJi, int(k.tjW()))) // 噬心龙咒激发：获得【反击 2/4/6/8/10】（常驻，不必入阵）
-			}
-			if k := u.tals[famLeiYingBiHu]; k != nil && k.tjOn() {
-				g := int64(float64(u.MaxHP) * k.tjX() / 100)
-				b.changeMaxHP(u, k.id, g)
-				b.heal(u, k.id, g)
-			}
-		}
-	}
-	for side := range b.units {
-		for _, u := range b.units[side] {
-			k := u.tals[famTeDingRuoHua]
-			if k == nil || weakenPct[k.id] == 0 {
-				continue
-			}
-			b.show(u, k.id, b.frontOf(1-side)...)
-			for _, x := range b.units[1-side] {
-				b.changeAtt(x, k.id, -x.att*weakenPct[k.id]/100)
-			}
-		}
-	}
-}
-
-// initPellets：火炮之术战斗开始时获得（本方先攻护法数 × b）枚不稳定弹丸（前阵后阵都给，FAQ）。
-func (b *battle) initPellets(u *unit) {
-	if k := u.tal(famHuoPaoZhiShu); k != nil && !u.pelletInit {
-		u.pelletInit = true
-		for _, x := range b.units[u.side] {
-			if x.tals[famXianGong] != nil {
-				u.pellets += k.param(1)
-			}
-		}
-		b.pelletCount(u)
-	}
-}
-
-// pelletCount 刷新小夫子头像上的弹丸数（客户端小夫子与阿修罗共用 XIULUO_COUNT 计数，war/config.lua isXiuLuo）。
-func (b *battle) pelletCount(u *unit) {
-	b.w.u8(CmdXiuluoCount)
-	b.w.u8(u.Pos)
-	b.w.u8(min(max(u.pellets, 0), 255))
-}
-
 // enter 是单位从后阵补位进入前阵时的「入阵」神通。开场就在前阵的不算入阵：
 // 官方战报（session-01/02）里入阵神通 636 次全在 MOVE 之后，第一个 TURN 之前一次也没有。
 func (b *battle) enter(u *unit) {
@@ -129,59 +55,13 @@ func (b *battle) enter(u *unit) {
 	}
 	b.initPellets(u)
 	if k := u.tal(famYuanHu); k != nil {
-		// 对敌方三体造成 b% 攻击力的水属性伤害，回复我方全体各自上限 c% 的生命
-		if ts := b.pickN(b.foes(u), 3); len(ts) > 0 {
-			b.show(u, k.id, ts...)
-			for _, x := range ts {
-				b.propertyHurt(u, x, k.id, u.att*int64(k.param(1))/100, 2)
-			}
-		}
-		if allies := b.allies(u); len(allies) > 0 && u.alive() { // 官方战报：援护只有指向敌方的一次 ACT_DO，回血直接 ADD_HP
-			for _, x := range allies {
-				b.heal(x, k.id, x.maxHP*int64(k.param(2))/100+int64(float64(x.maxHP)*k.tjX()/100))
-			}
-		}
+		b.onYuanHu(u, k)
 	}
 	if k := u.tal(famLongYue); k != nil {
-		// 对敌方全体造成 a% 攻击的水属性伤害，各 b% 概率混乱
-		if foes := b.foes(u); len(foes) > 0 {
-			b.show(u, k.id, foes...)
-			for _, x := range foes {
-				n := u.att * int64(k.param(0)) / 100
-				if x.mshield > 0 {
-					n = k.tjBoost(n)
-				}
-				if x.alive() && b.chance(k.param(1)) {
-					b.addStatus(x, stConfuse, 0, 1, true, 5051, slotDebuff) // 负面状态先于伤害结算（用户规则）
-				}
-				b.propertyHurt(u, x, k.id, n, 2)
-			}
-		}
+		b.onLongYue(u, k)
 	}
 	if k := u.tal(famPoChuJinGu); k != nil {
-		// 我方气血最低的三个护法恢复其上限 a% 的气血，b% 概率移除其所有负面状态
-		allies := b.allies(u)
-		for i := range allies {
-			for j := i + 1; j < len(allies); j++ {
-				if allies[j].hp < allies[i].hp {
-					allies[i], allies[j] = allies[j], allies[i]
-				}
-			}
-		}
-		if ts := allies[:min(3, len(allies))]; len(ts) > 0 {
-			b.show(u, k.id, ts...)
-			for _, x := range ts {
-				b.heal(x, k.id, x.maxHP*int64(k.param(0))/100)
-				if b.chance(k.param(1)) {
-					for b.clearOneDebuff(x) {
-					}
-				}
-				if k.tjOn() && b.chance(k.tjPct()) {
-					b.setStatus(x, stImmune, 0, 1, false, 5321, slotBuff)
-					b.zhanhu(x, 5265)
-				}
-			}
-		}
+		b.onPoChuJinGu(u, k)
 	}
 	if k := u.tal(famZiQingJian); k != nil && u.jianyi > 0 {
 		// 消耗所有剑意，每层提升 a% 初始攻击，每 2 层额外增加 1 把仙剑
@@ -194,36 +74,7 @@ func (b *battle) enter(u *unit) {
 		}
 	}
 	if k := u.tal(famTianGangJianQi); k != nil {
-		// 消耗生命最高的仙族护法 a% 上限生命，使随机敌人受到两倍该值的伤害
-		var god *unit
-		for _, x := range b.allies(u) {
-			if x.Race == raceGod && (god == nil || x.hp > god.hp) {
-				god = x
-			}
-		}
-		if foes := b.foes(u); god != nil && len(foes) > 0 {
-			// 官方战报：仙族护法失去其上限 32%（不封顶，可致死），敌人受到两倍；优先打不处于无敌 / 暴走的敌人（图鉴）
-			pool := b.vulnerable(foes)
-			o := pool[b.rng.IntN(len(pool))]
-			cost := god.maxHP * int64(k.param(0)) / 100
-			b.show(u, k.id, o)
-			b.hurt(u, o, k.id, cost*2, false)
-			if k.tjOn() {
-				var rest []*unit
-				for _, x := range b.foes(u) {
-					if x != o {
-						rest = append(rest, x)
-					}
-				}
-				if len(rest) > 0 {
-					rest = b.vulnerable(rest)
-					x := rest[b.rng.IntN(len(rest))]
-					b.show(u, k.id, x)
-					b.hurt(u, x, k.id, int64(float64(cost*2)*k.tjX()/100), false)
-				}
-			}
-			b.hurt(god, god, k.id, cost, false)
-		}
+		b.onTianGangJianQi(u, k)
 	}
 	if k := u.tal(famXiuLin); k != nil {
 		ts := b.pickN(b.allies(u), 3)
@@ -273,68 +124,13 @@ func (b *battle) enter(u *unit) {
 		}
 	}
 	if k := u.tal(famQianKunXiu); k != nil {
-		// a% 概率捆缚敌方攻击最高的两名；另有（单独判定的）b% 概率使敌方攻击最低的两名本回合隐身。
-		// 捆缚、隐身施放时都可被法术结界免疫（FAQ）；捆缚下次行动后清除，隐身到当前回合结束。
-		// 官方战报：ACT_DO(乾坤袖 → 敌方全体前阵) → BUFF 5231（捆缚，被不侵抵抗的不挂）。以前捆缚不带 buff 号，
-		// 客户端没有 BUFF 命令就不播捆缚特效。
-		foes := b.foes(u)
-		sortByAtt(foes)
-		bind, hide := b.chance(k.param(0)), b.chance(k.param(1))
-		if len(foes) > 0 && (bind || hide) {
-			b.show(u, k.id, foes...)
-			if bind {
-				for _, x := range foes[:min(2, len(foes))] {
-					b.addStatus(x, stBind, 0, 1, true, qkxBindBuff, slotDebuff)
-				}
-			}
-			if hide {
-				for _, x := range foes[max(0, len(foes)-2):] {
-					if x.mshield == 0 {
-						b.setStatus(x, stHidden, 0, 1, false, hiddenBuff, slotBuff)
-					}
-				}
-			}
-		}
-		if k.tjOn() && b.chance(k.tjPct()) { // 天将：单独判定，提升自身攻击力的 60% 直到战斗结束
-			b.changeAtt(u, k.id, u.att*60/100)
-		}
+		b.onQianKunXiu(u, k)
 	}
 	if k := u.tal(famShenWei); k != nil {
-		if b.chance(k.param(0)) {
-			for _, o := range b.foes(u) {
-				if o.slot() != u.slot() {
-					continue
-				}
-				if x := b.quzhuPick(o); x != nil { // 驱逐对位（规则同驱逐：后阵已阵亡的也可能被换上来）
-					b.show(u, k.id, o)
-					b.quzhu(o, x)
-				}
-				break
-			}
-		}
-		if ts := b.pickN(b.foes(u), 3); len(ts) > 0 {
-			b.show(u, k.id, ts...)
-			for _, x := range ts {
-				b.propertyHurt(u, x, k.id, u.att*int64(k.param(1))/100, 2)
-			}
-		}
-		if k.tjOn() && b.chance(k.tjPct()) {
-			b.setStatus(u, stImmune, 0, 1, false, 5321, slotBuff)
-		}
+		b.onShenWei(u, k)
 	}
 	if k := u.tal(famPanTaoYan); k != nil {
-		allies := b.allies(u)
-		b.show(u, k.id, allies...)
-		for _, x := range allies {
-			grow := x.maxHP * int64(k.param(0)) / 100
-			b.changeMaxHP(x, k.id, grow)
-			b.heal(x, k.id, grow)
-		}
-		if k.tjOn() && b.chance(k.tjPct()) {
-			for _, x := range allies {
-				x.spd++
-			}
-		}
+		b.onPanTaoYan(u, k)
 	}
 	if k := u.tal(famZhenYan); k != nil && u.slot() == 3 {
 		b.show(u, k.id, u)
@@ -363,27 +159,7 @@ func (b *battle) enter(u *unit) {
 		}
 	}
 	if k := u.tal(famGuangYinSui); k != nil {
-		// 入阵：战意 +a；自身及相邻护法 b% 概率获得无敌，到当前回合结束。
-		// 官方战报：ACT_DO 只指向自己（入阵动画），ZHANYI，再一条 BUFF 5321 列出获得无敌的单位。
-		b.show(u, k.id, u)
-		b.addZY(u.side, k.param(0))
-		for _, x := range append([]*unit{u}, b.adjacent(u)...) {
-			if b.chance(k.param(1)) {
-				b.setStatus(x, stImmune, 0, 1, false, 5321, slotBuff)
-			}
-		}
-		if k.tjOn() {
-			for _, x := range b.units[u.side] {
-				if !x.alive() && !x.gone && x.front() && abs(x.slot()-u.slot()) == 1 && x.has(stNoSoul) == nil &&
-					b.chance(k.tjPct()) {
-					b.show(u, k.id, x)
-					b.relive(x, k.id, x.maxHP)
-					x.doomIn = 2
-					b.setStatus(x, stNoSoul, 0, maxRounds, false, 0, 0)
-					b.huoshi(x, 5402) // 活尸2
-				}
-			}
-		}
+		b.onGuangYinSui(u, k)
 	}
 	if k := u.tal(famShuiZhiYuan); k != nil {
 		// 入阵：敌方全体 a% 攻击的水属性伤害，b% 概率僵化（下次行动后清除）。
@@ -399,43 +175,7 @@ func (b *battle) enter(u *unit) {
 		}
 	}
 	if k := u.tal(famZhuXianZhen); k != nil {
-		if k.id >= 120981 && k.id <= 120984 {
-			// 12 系 desc 是「提升所有本方护法 a% 攻击力上限」，引擎内无攻击上限概念，
-			// 近似为入阵时本方全体永久 +a%（以 baseAtt 为基数，如狂热）
-			allies := b.allies(u)
-			b.show(u, k.id, allies...)
-			for _, x := range allies {
-				b.changeAtt(x, k.id, x.baseAtt*int64(k.param(0))/100)
-			}
-		} else if ts := b.pickN(b.allies(u), k.param(0)); len(ts) > 0 {
-			// 携 a 柄仙剑分给本方护法（含自己），每人至多 1 柄；沿用布剑的剑与剑伤机制
-			b.show(u, k.id, ts...)
-			for _, x := range ts {
-				b.giveSword(x)
-			}
-		}
-		if k.tjOn() {
-			// 激发：对位敌人按本方持剑数受伤——动画只播一次，伤害逐个结算
-			var hit []*unit
-			var dmg []int64
-			for _, x := range b.allies(u) {
-				if x.swords == 0 {
-					continue
-				}
-				for _, o := range b.foes(u) {
-					if o.slot() == x.slot() {
-						hit = append(hit, o)
-						dmg = append(dmg, int64(float64(o.maxHP)*k.tjX()/100)*int64(x.swords))
-					}
-				}
-			}
-			if len(hit) > 0 {
-				b.show(u, k.id, hit...)
-				for i, o := range hit {
-					b.loseHP(u, o, k.id, dmg[i]) // 诛仙阵激发：对位护法流失上限 $x%×飞剑数 的生命（生命流失）
-				}
-			}
-		}
+		b.onZhuXianZhen(u, k)
 	}
 }
 
@@ -460,5 +200,230 @@ func (b *battle) restoreInitial(x *unit, id int32) {
 	}
 	if d := int64(x.MaxHP) - x.maxHP; d != 0 {
 		b.changeMaxHP(x, id, d)
+	}
+}
+
+// onYuanHu：入阵——援护。
+func (b *battle) onYuanHu(u *unit, k *talent) {
+	// 对敌方三体造成 b% 攻击力的水属性伤害，回复我方全体各自上限 c% 的生命
+	if ts := b.pickN(b.foes(u), 3); len(ts) > 0 {
+		b.show(u, k.id, ts...)
+		for _, x := range ts {
+			b.propertyHurt(u, x, k.id, u.att*int64(k.param(1))/100, 2)
+		}
+	}
+	if allies := b.allies(u); len(allies) > 0 && u.alive() { // 官方战报：援护只有指向敌方的一次 ACT_DO，回血直接 ADD_HP
+		for _, x := range allies {
+			b.heal(x, k.id, x.maxHP*int64(k.param(2))/100+int64(float64(x.maxHP)*k.tjX()/100))
+		}
+	}
+}
+
+// onLongYue：入阵——龙跃。
+func (b *battle) onLongYue(u *unit, k *talent) {
+	// 对敌方全体造成 a% 攻击的水属性伤害，各 b% 概率混乱
+	if foes := b.foes(u); len(foes) > 0 {
+		b.show(u, k.id, foes...)
+		for _, x := range foes {
+			n := u.att * int64(k.param(0)) / 100
+			if x.mshield > 0 {
+				n = k.tjBoost(n)
+			}
+			if x.alive() && b.chance(k.param(1)) {
+				b.addStatus(x, stConfuse, 0, 1, true, 5051, slotDebuff) // 负面状态先于伤害结算（用户规则）
+			}
+			b.propertyHurt(u, x, k.id, n, 2)
+		}
+	}
+}
+
+// onPoChuJinGu：入阵——破除禁锢。
+func (b *battle) onPoChuJinGu(u *unit, k *talent) {
+	// 我方气血最低的三个护法恢复其上限 a% 的气血，b% 概率移除其所有负面状态
+	allies := b.allies(u)
+	for i := range allies {
+		for j := i + 1; j < len(allies); j++ {
+			if allies[j].hp < allies[i].hp {
+				allies[i], allies[j] = allies[j], allies[i]
+			}
+		}
+	}
+	if ts := allies[:min(3, len(allies))]; len(ts) > 0 {
+		b.show(u, k.id, ts...)
+		for _, x := range ts {
+			b.heal(x, k.id, x.maxHP*int64(k.param(0))/100)
+			if b.chance(k.param(1)) {
+				for b.clearOneDebuff(x) {
+				}
+			}
+			if k.tjOn() && b.chance(k.tjPct()) {
+				b.setStatus(x, stImmune, 0, 1, false, 5321, slotBuff)
+				b.zhanhu(x, 5265)
+			}
+		}
+	}
+}
+
+// onTianGangJianQi：入阵——天罡剑气。
+func (b *battle) onTianGangJianQi(u *unit, k *talent) {
+	// 消耗生命最高的仙族护法 a% 上限生命，使随机敌人受到两倍该值的伤害
+	var god *unit
+	for _, x := range b.allies(u) {
+		if x.Race == raceGod && (god == nil || x.hp > god.hp) {
+			god = x
+		}
+	}
+	if foes := b.foes(u); god != nil && len(foes) > 0 {
+		// 官方战报：仙族护法失去其上限 32%（不封顶，可致死），敌人受到两倍；优先打不处于无敌 / 暴走的敌人（图鉴）
+		pool := b.vulnerable(foes)
+		o := pool[b.rng.IntN(len(pool))]
+		cost := god.maxHP * int64(k.param(0)) / 100
+		b.show(u, k.id, o)
+		b.hurt(u, o, k.id, cost*2, false)
+		if k.tjOn() {
+			var rest []*unit
+			for _, x := range b.foes(u) {
+				if x != o {
+					rest = append(rest, x)
+				}
+			}
+			if len(rest) > 0 {
+				rest = b.vulnerable(rest)
+				x := rest[b.rng.IntN(len(rest))]
+				b.show(u, k.id, x)
+				b.hurt(u, x, k.id, int64(float64(cost*2)*k.tjX()/100), false)
+			}
+		}
+		b.hurt(god, god, k.id, cost, false)
+	}
+}
+
+// onQianKunXiu：入阵——乾坤袖。
+func (b *battle) onQianKunXiu(u *unit, k *talent) {
+	// a% 概率捆缚敌方攻击最高的两名；另有（单独判定的）b% 概率使敌方攻击最低的两名本回合隐身。
+	// 捆缚、隐身施放时都可被法术结界免疫（FAQ）；捆缚下次行动后清除，隐身到当前回合结束。
+	// 官方战报：ACT_DO(乾坤袖 → 敌方全体前阵) → BUFF 5231（捆缚，被不侵抵抗的不挂）。以前捆缚不带 buff 号，
+	// 客户端没有 BUFF 命令就不播捆缚特效。
+	foes := b.foes(u)
+	sortByAtt(foes)
+	bind, hide := b.chance(k.param(0)), b.chance(k.param(1))
+	if len(foes) > 0 && (bind || hide) {
+		b.show(u, k.id, foes...)
+		if bind {
+			for _, x := range foes[:min(2, len(foes))] {
+				b.addStatus(x, stBind, 0, 1, true, qkxBindBuff, slotDebuff)
+			}
+		}
+		if hide {
+			for _, x := range foes[max(0, len(foes)-2):] {
+				if x.mshield == 0 {
+					b.setStatus(x, stHidden, 0, 1, false, hiddenBuff, slotBuff)
+				}
+			}
+		}
+	}
+	if k.tjOn() && b.chance(k.tjPct()) { // 天将：单独判定，提升自身攻击力的 60% 直到战斗结束
+		b.changeAtt(u, k.id, u.att*60/100)
+	}
+}
+
+// onShenWei：入阵——神威。
+func (b *battle) onShenWei(u *unit, k *talent) {
+	if o := b.opposite(u); b.chance(k.param(0)) && o != nil {
+		if x := b.quzhuPick(o); x != nil { // 驱逐对位（规则同驱逐：后阵已阵亡的也可能被换上来）
+			b.show(u, k.id, o)
+			b.quzhu(o, x)
+		}
+	}
+	if ts := b.pickN(b.foes(u), 3); len(ts) > 0 {
+		b.show(u, k.id, ts...)
+		for _, x := range ts {
+			b.propertyHurt(u, x, k.id, u.att*int64(k.param(1))/100, 2)
+		}
+	}
+	if k.tjOn() && b.chance(k.tjPct()) {
+		b.setStatus(u, stImmune, 0, 1, false, 5321, slotBuff)
+	}
+}
+
+// onPanTaoYan：入阵——蟠桃宴。
+func (b *battle) onPanTaoYan(u *unit, k *talent) {
+	allies := b.allies(u)
+	b.show(u, k.id, allies...)
+	for _, x := range allies {
+		grow := x.maxHP * int64(k.param(0)) / 100
+		b.changeMaxHP(x, k.id, grow)
+		b.heal(x, k.id, grow)
+	}
+	if k.tjOn() && b.chance(k.tjPct()) {
+		for _, x := range allies {
+			x.spd++
+		}
+	}
+}
+
+// onGuangYinSui：入阵——光阴碎。
+func (b *battle) onGuangYinSui(u *unit, k *talent) {
+	// 入阵：战意 +a；自身及相邻护法 b% 概率获得无敌，到当前回合结束。
+	// 官方战报：ACT_DO 只指向自己（入阵动画），ZHANYI，再一条 BUFF 5321 列出获得无敌的单位。
+	b.show(u, k.id, u)
+	b.addZY(u.side, k.param(0))
+	for _, x := range append([]*unit{u}, b.adjacent(u)...) {
+		if b.chance(k.param(1)) {
+			b.setStatus(x, stImmune, 0, 1, false, 5321, slotBuff)
+		}
+	}
+	if k.tjOn() {
+		for _, x := range b.units[u.side] {
+			if !x.alive() && !x.gone && x.front() && abs(x.slot()-u.slot()) == 1 && x.has(stNoSoul) == nil &&
+				b.chance(k.tjPct()) {
+				b.show(u, k.id, x)
+				b.relive(x, k.id, x.maxHP)
+				x.doomIn = 2
+				b.setStatus(x, stNoSoul, 0, maxRounds, false, 0, 0)
+				b.huoshi(x, 5402) // 活尸2
+			}
+		}
+	}
+}
+
+// onZhuXianZhen：入阵——诛仙阵。
+func (b *battle) onZhuXianZhen(u *unit, k *talent) {
+	if k.id >= 120981 && k.id <= 120984 {
+		// 12 系 desc 是「提升所有本方护法 a% 攻击力上限」，引擎内无攻击上限概念，
+		// 近似为入阵时本方全体永久 +a%（以 baseAtt 为基数，如狂热）
+		allies := b.allies(u)
+		b.show(u, k.id, allies...)
+		for _, x := range allies {
+			b.changeAtt(x, k.id, x.baseAtt*int64(k.param(0))/100)
+		}
+	} else if ts := b.pickN(b.allies(u), k.param(0)); len(ts) > 0 {
+		// 携 a 柄仙剑分给本方护法（含自己），每人至多 1 柄；沿用布剑的剑与剑伤机制
+		b.show(u, k.id, ts...)
+		for _, x := range ts {
+			b.giveSword(x)
+		}
+	}
+	if k.tjOn() {
+		// 激发：对位敌人按本方持剑数受伤——动画只播一次，伤害逐个结算
+		var hit []*unit
+		var dmg []int64
+		for _, x := range b.allies(u) {
+			if x.swords == 0 {
+				continue
+			}
+			for _, o := range b.foes(u) {
+				if o.slot() == x.slot() {
+					hit = append(hit, o)
+					dmg = append(dmg, int64(float64(o.maxHP)*k.tjX()/100)*int64(x.swords))
+				}
+			}
+		}
+		if len(hit) > 0 {
+			b.show(u, k.id, hit...)
+			for i, o := range hit {
+				b.loseHP(u, o, k.id, dmg[i]) // 诛仙阵激发：对位护法流失上限 $x%×飞剑数 的生命（生命流失）
+			}
+		}
 	}
 }
