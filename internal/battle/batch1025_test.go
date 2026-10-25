@@ -114,3 +114,19 @@ func TestDoubleYuBing(t *testing.T) {
 		t.Fatalf("yubing fired %d, single %d", u.fired[famYuBing], one)
 	}
 }
+
+// TestDunrangLeftToRight：遁让与后阵从左到右第一个存活护法交换；雷影庇护代承时跳过雷震子本人。
+func TestDunrangLeftToRight(t *testing.T) {
+	u := newUnit(fu(1, 10, 1000, 1, levelID(famDunRang, 10)), 0)
+	lei := newUnit(fu(6, 10, 100000, 1, levelID(famLeiYingBiHu, 4)), 0)
+	b7 := newUnit(fu(7, 10, 1000, 1), 0)
+	b8 := newUnit(fu(8, 10, 1000, 1), 0)
+	src := newUnit(fu(101, 10, 1000, 1), 1)
+	b := faqBattle(u, b8, lei, b7, src)
+	if to := b.dunrangTo(0, nil); to != lei {
+		t.Fatalf("dunrang picked slot %d, want 6", to.slot())
+	}
+	if !b.leiying(src, u, 5000, true) || u.front() || !b7.front() {
+		t.Fatalf("leiying swap: u front %v, slot-7 front %v", u.front(), b7.front())
+	}
+}

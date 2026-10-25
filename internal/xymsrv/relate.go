@@ -153,9 +153,12 @@ func (p *Player) bestBench5(name string) int {
 	return best
 }
 
-// fightNames 是当前出战阵容里所有卡的名字。
+// fightNames 是当前出战阵容里所有卡的名字（含本场借来的援护）。
 func (p *Player) fightNames() map[string]bool {
 	names := map[string]bool{}
+	for _, n := range p.helperNames { // 援护：借来的护法也算上阵（武则天「吾皇万岁」借李世民也生效）
+		names[n] = true
+	}
 	lu := p.lineup(p.FightNo)
 	if lu == nil {
 		return names

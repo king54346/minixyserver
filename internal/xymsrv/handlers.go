@@ -2,6 +2,7 @@ package xymsrv
 
 import (
 	"log/slog"
+	"runtime/debug"
 	"sync"
 
 	"turnrpg/internal/gamedata"
@@ -107,6 +108,15 @@ func (s *Session) handleExt(body []byte) {
 	p := s.player
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// handler 出错（panic）不能拖垮整个进程（所有人一起掉线）：记下堆栈，回一条解锁包，会话照常
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("handler panic", "sess", s.id, "uid", s.role.UID, "msg", full, "err", r, "stack", string(debug.Stack()))
+			if lr := lockReply()[pid]; lr != nil {
+				s.send(xym.MainExt, lr.MustEncode(nil))
+			}
+		}
+	}()
 	// 会话里的角色是登录时的副本，别处（别的玩家、GM、测试）改过存档后会过时；每条请求先取最新的，
 	// Player.role 跟着同步（p.grade() 等按它判断等级门槛）。
 	if ro := s.srv.roles.Get(s.role.UID); ro != nil {
