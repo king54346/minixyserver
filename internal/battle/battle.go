@@ -336,6 +336,10 @@ func (b *battle) act(u *unit) {
 			b.tickStatus(u, true)
 		} // 行动中阵亡的状态已在 died → leaveClear 里清掉（锢魂保留）
 	}()
+	// 出手前加的「攻击后清除」临时加攻（冲锋、剑歌）在主攻击的攻击行为之外，attackAction 把它当成已有的不扣；
+	// 行动结束统一扣回（之前一直留着，越打越高）。中途被驱逐 / 阵亡重置过的不再扣（tempEpoch）。
+	temp0, fired0, epoch0 := u.tempAtt, u.fired, u.tempEpoch
+	defer b.endAction(u, temp0, fired0, epoch0, atkFollow)
 	if u.has(stBind) != nil {
 		return
 	}

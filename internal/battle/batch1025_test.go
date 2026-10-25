@@ -162,3 +162,29 @@ func TestQuzhuMidAttackKeepsAtt(t *testing.T) {
 		t.Fatalf("att after re-enter %d, want 3000", u.att)
 	}
 }
+
+// TestChongFengTempCleared：冲锋（攻击后清除）的加攻在行动结束时扣回；行动中被驱逐到后阵的，再入阵仍是初始攻击。
+func TestChongFengTempCleared(t *testing.T) {
+	u := newUnit(fu(1, 3000, 100000, 1, levelID(famChongFeng, 10)), 0)
+	setParam(u.tals[famChongFeng], 0, 100)
+	x := newUnit(fu(101, 10, 10000000, 1), 1)
+	b := faqBattle(u, x)
+	b.act(u)
+	if u.att != 3000 || u.tempAtt != 0 {
+		t.Fatalf("after act att %d temp %d, want 3000 / 0", u.att, u.tempAtt)
+	}
+
+	v := newUnit(fu(1, 3000, 100000, 1, levelID(famChongFeng, 10)), 0)
+	setParam(v.tals[famChongFeng], 0, 100)
+	bn := newUnit(fu(6, 10, 1000, 1), 0)
+	y := newUnit(fu(101, 10, 10000000, 1, levelID(famQuZhu, 10)), 1)
+	b2 := faqBattle(v, bn, y)
+	temp0, fired0, epoch0 := v.tempAtt, v.fired, v.tempEpoch
+	b2.tempUp(v, v.tals[famChongFeng], 600) // 出手前冲锋加攻
+	b2.quzhu(v, bn)                         // 行动中被驱逐
+	b2.endAction(v, temp0, fired0, epoch0, atkFollow)
+	b2.swap(bn, v)
+	if v.att != 3000 {
+		t.Fatalf("re-enter att %d, want 3000", v.att)
+	}
+}
