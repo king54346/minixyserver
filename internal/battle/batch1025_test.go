@@ -130,3 +130,18 @@ func TestDunrangLeftToRight(t *testing.T) {
 		t.Fatalf("leiying swap: u front %v, slot-7 front %v", u.front(), b7.front())
 	}
 }
+
+// TestRampageOnRevive：带暴走神通的护法被复活后当场暴走，本回合无敌（到回合结束清除），不等下回合。
+func TestRampageOnRevive(t *testing.T) {
+	u := newUnit(raced(fu(1, 100, 1000, 1, levelID(famBuQu, 4)), raceBeast), 0)
+	b := faqBattle(u, newUnit(fu(101, 10, 1000, 1), 1))
+	u.hp = 0
+	b.relive(u, 1, 500)
+	if !u.raged || !b.invincible(u) {
+		t.Fatalf("raged %v invincible %v", u.raged, b.invincible(u))
+	}
+	b.tickStatus(u, false) // 回合结束
+	if b.invincible(u) {
+		t.Fatal("immune should end with the round")
+	}
+}

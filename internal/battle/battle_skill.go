@@ -246,6 +246,9 @@ func (b *battle) relive(t *unit, id int32, hp int64) {
 	b.zfSync(t) // 阵法：复活后按所在阵位重算固定加成
 	b.reviveSkill(t)
 	b.deathSkillEvent(t)
+	if t.front() {
+		b.rampage(t) // 被复活即暴走：当回合无敌（到本回合结束），不等下回合开始（用户规则）；后阵的等补位后回合开始再判
+	}
 }
 
 // magicTargets 按 magic_mgr.lua MAGIC_DESC11 的 17 种规则选目标。
