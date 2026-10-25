@@ -112,7 +112,7 @@ func (b *battle) releaseCharge(u *unit, k *talent) {
 			b.boon(x)
 		}
 	case famJianGe: // 消耗蓄力，每层提升 b% 当前攻击（攻击后清除）；c% 概率把消耗的层数转给另一位队友
-		b.tempUp(u, k, u.att*int64(k.param(1)*n)/100)
+		b.tempUp(u, k, u.atkBase()*int64(k.param(1)*n)/100)
 		if b.chance(k.param(2)) {
 			// 转给战位最前且未满蓄力的护法，加满为止，溢出消失（FAQ）
 			var to *unit

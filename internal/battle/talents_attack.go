@@ -28,7 +28,7 @@ func (b *battle) tuxi(u *unit) {
 	// 自带突袭 + 套装突袭：各自判定，都中就加两次（用户报：只触发一次）
 	for _, k := range append([]*talent{k}, u.dupTals[famTuXi]...) {
 		if b.chance(k.param(0)) {
-			b.tempUp(u, k, u.att/2+int64(float64(u.att)*k.tjX()/100)) // 激发：额外 $x%，且不触发先攻、逆势
+			b.tempUp(u, k, u.atkBase()/2+int64(float64(u.atkBase())*k.tjX()/100)) // 激发：额外 $x%，且不触发先攻、逆势
 			b.buff(u, tuxiHitBuff, 1)                                 // 官方战报：突袭后挂「命中buff」5461（必中）
 		}
 	}
@@ -110,15 +110,19 @@ func (b *battle) beforeAttack(u, t *unit) {
 			b.changeMaxHP(u, k.id, int64(float64(got)*k.tjX()/100))
 		}
 	}
+	// 异态：「伤害提升 a%」是伤害提高，不是加攻击——结算伤害时乘（用户确认，同灭法）；触发时看应攻击的目标，之后与
+	// 实际受击者无关（FAQ）。
 	if k := u.tal(famYiTai); k != nil && (t.hasDebuff() || t.mshield > 0) {
-		b.tempUp(u, k, u.att*int64(k.param(0))/100)
+		b.show(u, k.id, u)
+		u.dmgUp += k.param(0)
 	} else if u.huweiLv > 0 && (t.hasDebuff() || t.mshield > 0) && b.chance(u.huweiLv*6) {
 		if k := newTalent(levelID(famYiTai, 4)); k != nil { // 狐尾：攻击时 (x×6)% 概率触发异态4
-			b.tempUp(u, k, u.att*int64(k.param(0))/100)
+			b.show(u, k.id, u)
+			u.dmgUp += k.param(0)
 		}
 	}
 	if k := u.tal(famTaChao); k != nil && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.att*int64(k.param(1))/100)
+		b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100) // 「提升 60% 初始攻击力」
 	}
 	if k := u.tal(famShouWang); k != nil && b.chance(k.param(0)) {
 		b.show(u, k.id, u)
@@ -140,10 +144,10 @@ func (b *battle) beforeAttack(u, t *unit) {
 		b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100)
 	}
 	if k := u.tal(famYuBing); k != nil && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.att*int64(k.param(1))/100+int64(float64(u.att)*k.tjX()/100))
+		b.tempUp(u, k, u.atkBase()*int64(k.param(1))/100+int64(float64(u.atkBase())*k.tjX()/100))
 	}
 	if k := u.tal(famTingWei); k != nil && t.maxHP > 0 && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.att*(t.maxHP-t.hp)/t.maxHP)
+		b.tempUp(u, k, u.atkBase()*(t.maxHP-t.hp)/t.maxHP)
 		// 目标濒危（< 25%）时 b% 概率一击必杀（摧毁，不受免疫伤害影响），激发再加 $x%（FAQ）
 		if t.hp*100 < t.maxHP*25 && b.chance(k.param(1)+k.tjPct()) {
 			b.destroy(u, t, k.id)
@@ -172,15 +176,17 @@ func (b *battle) beforeAttack(u, t *unit) {
 		}
 	}
 	if k := u.tal(famMieFa); k != nil && (t.tal(famXianYi) != nil || t.tal(famBuQin) != nil) {
-		// 攻击时对具备仙衣 / 不侵的目标伤害提高 a%，且有同等概率清除无敌。
-		b.tempUp(u, k, u.att*int64(k.param(0))/100)
+		// 攻击时对具备仙衣 / 不侵的目标伤害提高 a%，且有同等概率清除无敌。伤害提高不是加攻击：结算伤害时乘
+		// （attack 里 attackTaken 之前，用户确认），界面上攻击不变。
+		b.show(u, k.id, u)
+		u.dmgUp += k.param(0)
 		if b.invincible(t) && b.chance(k.param(0)) { // 无敌、诈死的本回合免疫都清掉
 			b.clearStatus(t, stImmune)
 			b.clearStatus(t, stZhasi)
 		}
 	}
 	if k := u.tal(famHengChongZhiZhuang); k != nil && k.tjOn() {
-		b.tempUp(u, k, int64(float64(u.att)*k.tjX()/100))
+		b.tempUp(u, k, int64(float64(u.atkBase())*k.tjX()/100))
 	}
 	for _, rb := range raceBane {
 		if k := u.tal(rb.fam); k != nil && t.Race == rb.race && b.chance(k.param(0)) {

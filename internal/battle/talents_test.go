@@ -93,8 +93,8 @@ func TestB1Miefa(t *testing.T) {
 	if res.Skills[famMieFa.String()] == 0 {
 		t.Fatal("miefa not counted")
 	}
-	if !hasCmd(cmds, CmdAttChange, 21710, 1, 100) {
-		t.Fatalf("no ATT_CHANGE +100 by 21710: %+v", cmds)
+	if hasCmd(cmds, CmdAttChange, 21710, -1, -1) { // 伤害提高在结算时乘，不改攻击（用户确认）
+		t.Fatalf("灭法 changed attack: %+v", cmds)
 	}
 	got := subHPTo(cmds, 101)
 	if len(got) == 0 || got[0] != 200 {

@@ -481,3 +481,43 @@ func TestElemDebuffOnGuard(t *testing.T) {
 		t.Fatalf("guard stiff %v target stiff %v guard took %d", g.has(stStiff) != nil, x.has(stStiff) != nil, g.maxHP-g.hp)
 	}
 }
+
+// TestMiefaNoCompound：灭法是伤害提高（结算时乘）不是加攻：乱舞的每一下伤害相同、攻击不变、不层层叠加。
+func TestMiefaNoCompound(t *testing.T) {
+	u := newUnit(fu(1, 1000, 1000000, 1, levelID(famMieFa, 10), levelID(famLuanWu, 10)), 0)
+	x := newUnit(fu(101, 10, 10000000, 1, levelID(famXianYi, 1)), 1)
+	setParam(u.tals[famLuanWu], 0, 100)
+	b := faqBattle(u, x)
+	n := len(b.w.b)
+	b.attackAction(u, x, 100, atkMain)
+	cmds, err := DecodeRecord(append(append([]byte{CmdWarStart, 0}, b.w.b[n:]...), CmdWarEnd, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []int64
+	for _, c := range cmds {
+		if c.ID == CmdAttChange {
+			t.Fatalf("attack changed: %+v", c)
+		}
+		if c.ID == CmdSubHP && c.Targets[0][0] == 101 {
+			hits = append(hits, c.Targets[0][1])
+		}
+	}
+	want := int64(1000 * (100 + u.tals[famMieFa].param(0)) / 100)
+	if len(hits) < 2 || hits[0] != want || hits[1] != want {
+		t.Fatalf("hits %v, want %d each", hits, want)
+	}
+}
+
+// TestYitaiDamageUp：异态「伤害提升 a%」结算伤害时乘，不改攻击。
+func TestYitaiDamageUp(t *testing.T) {
+	u := newUnit(fu(1, 1000, 1000000, 1, levelID(famYiTai, 10)), 0)
+	x := newUnit(fu(101, 10, 10000000, 1), 1)
+	b := faqBattle(u, x)
+	b.setStatus(x, stBlind, 0, 1, true, 5041, slotDebuff)
+	x.status[stBlind].foe = true
+	got := b.attackAction(u, x, 100, atkMain)
+	if want := int64(1000 * (100 + u.tals[famYiTai].param(0)) / 100); got != want || u.att != 1000 {
+		t.Fatalf("dmg %d want %d, att %d", got, want, u.att)
+	}
+}

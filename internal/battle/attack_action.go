@@ -67,6 +67,10 @@ func (b *battle) attackAction(u, t *unit, pct int, kind atkKind) int64 {
 	}
 	temp0, fired0 := u.tempAtt, u.fired
 	u.fired = nil
+	prevBase, prevUp := u.tempBase, u.dmgUp
+	u.tempBase = temp0 // 外层攻击行为（主攻击）的临时加攻不算进这次的加攻基数，见 atkBase
+	u.dmgUp = 0        // 伤害提高只管这一次攻击行为（追加攻击各自判定，不叠外层的）
+	defer func() { u.tempBase, u.dmgUp = prevBase, prevUp }()
 	split := (*talent)(nil)
 	b.beforeAttack(u, t)
 	if !u.alive() || b.over || !retarget() {
@@ -323,6 +327,9 @@ func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 	if !victim.alive() || !u.alive() {
 		b.lastDealt = 0
 		return 0
+	}
+	if u.dmgUp > 0 {
+		dmg = dmg * int64(100+u.dmgUp) / 100 // 灭法 / 异态的「伤害提高 a%」：结算伤害时乘（触发时已判过目标条件）
 	}
 	dmg = b.attackTaken(u, victim, dmg)
 	if elem < 0 {

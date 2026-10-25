@@ -67,6 +67,8 @@ type unit struct {
 	poison       []poison
 	hurtUp       int // 会猎：受到物理伤害增加 %
 	tempAtt      int64
+	dmgUp        int   // 本次攻击行为的伤害提高 %（灭法、异态；结算伤害时乘，attackAction 结束时还原）
+	tempBase     int64 // 当前攻击行为开始时已有的临时加攻（外层攻击行为留下的），见 atkBase
 	acted        bool
 	gone         bool // 阵亡后槽位已被后阵补上：离场，不能再被复活
 	status       map[stKey]*status
@@ -180,6 +182,11 @@ func (t *talent) param(i int) int {
 }
 
 func (u *unit) alive() bool { return u.hp > 0 }
+
+// atkBase 是「攻击时提升 x% 攻击（攻击后清除）」类神通的基数：当前攻击去掉外层攻击行为留下的临时加攻。乱舞 / 连击这类
+// 追加攻击在主攻击的临时加攻还没清除时进行，原来按含临时加攻的攻击算，灭法、突袭等会层层叠加（用户报：逆鳞白龙乱舞中
+// 灭法从 +5012 叠成 +9522，攻击显示到 2 万多）。
+func (u *unit) atkBase() int64 { return u.att - u.tempBase }
 
 // speed 是当前先攻：基础 + 加值 − 凝滞，至少 1。
 func (u *unit) speed() int {
