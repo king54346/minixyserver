@@ -185,6 +185,8 @@ func (b *battle) backToBench(x *unit) {
 // benchReset：护法回到后阵时攻击力、生命上限重置为进入战斗的初始值，去掉加成类图标（神之护、神之力……）；
 // 燃烧、锢魂、狐尾等还在的状态图标保留。
 func (b *battle) benchReset(x *unit) {
+	x.tempAtt, x.tempBase = 0, 0 // 临时加攻随重置清掉（endAction 见 tempEpoch）
+	x.tempEpoch++
 	// 逆鳞白龙也照样重置（用户确认）；它再入阵时噬心龙咒把攻击恢复到本场最高值（talents_enter.go）
 	if d := x.baseAtt - x.att; d != 0 {
 		b.changeAtt(x, 0, d)

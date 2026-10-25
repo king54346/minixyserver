@@ -65,7 +65,7 @@ func (b *battle) attackAction(u, t *unit, pct int, kind atkKind) int64 {
 			}
 		}
 	}
-	temp0, fired0 := u.tempAtt, u.fired
+	temp0, fired0, epoch0 := u.tempAtt, u.fired, u.tempEpoch
 	u.fired = nil
 	prevBase, prevUp := u.tempBase, u.dmgUp
 	u.tempBase = temp0 // 外层攻击行为（主攻击）的临时加攻不算进这次的加攻基数，见 atkBase
@@ -74,7 +74,7 @@ func (b *battle) attackAction(u, t *unit, pct int, kind atkKind) int64 {
 	split := (*talent)(nil)
 	b.beforeAttack(u, t)
 	if !u.alive() || b.over || !retarget() {
-		b.endAction(u, temp0, fired0, kind)
+		b.endAction(u, temp0, fired0, epoch0, kind)
 		return 0
 	}
 	// 分击是「发动攻击」时机（在攻击时神通之后、命中之前）：每次攻击行为都触发。
@@ -133,13 +133,20 @@ func (b *battle) attackAction(u, t *unit, pct int, kind atkKind) int64 {
 	if split != nil {
 		b.afterSplit(u)
 	}
-	b.endAction(u, temp0, fired0, kind)
+	b.endAction(u, temp0, fired0, epoch0, kind)
 	return dmg
 }
 
 // endAction 清除这次攻击行为加的临时攻击力（主攻击走魔煞 / 兽妖激发的保留）。
-func (b *battle) endAction(u *unit, temp0 int64, fired0 map[family]int64, kind atkKind) {
+//
+// 攻击中途被驱逐 / 脱帽换到后阵（攻击重置为初始值）或阵亡（神佑等复活也是初始攻击）时，临时加攻已经随重置没了，
+// 不能再扣一次（用户报：3000 攻击的斗战胜佛被驱逐再入阵变 600 多）。
+func (b *battle) endAction(u *unit, temp0 int64, fired0 map[family]int64, epoch0 int, kind atkKind) {
 	u.attachSoul, u.attachNoHeal = false, 0
+	if u.tempEpoch != epoch0 {
+		u.tempAtt, u.fired = 0, fired0
+		return
+	}
 	if up := u.tempAtt - temp0; up != 0 {
 		keep := int64(0)
 		if kind == atkMain {

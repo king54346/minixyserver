@@ -145,3 +145,20 @@ func TestRampageOnRevive(t *testing.T) {
 		t.Fatal("immune should end with the round")
 	}
 }
+
+// TestQuzhuMidAttackKeepsAtt：攻击中带着突袭的临时加攻被驱逐到后阵，再入阵攻击仍是初始值，不被多扣一次临时加攻
+// （用户报：3000 攻击的斗战胜佛被驱逐再入阵变 600 多）。
+func TestQuzhuMidAttackKeepsAtt(t *testing.T) {
+	u := newUnit(fu(4, 3000, 100000, 1, levelID(famTuXi, 10)), 0)
+	bn := newUnit(fu(6, 10, 1000, 1), 0)
+	x := newUnit(fu(104, 10, 1000000, 1), 1)
+	b := faqBattle(u, bn, x)
+	temp0, fired0, epoch0 := u.tempAtt, u.fired, u.tempEpoch
+	b.tempUp(u, u.tals[famTuXi], 1500) // 攻击中：突袭 +1500
+	b.quzhu(u, bn)                     // 攻击中被驱逐（如对方反击带驱逐）
+	b.endAction(u, temp0, fired0, epoch0, atkMain)
+	b.swap(bn, u) // 再入阵
+	if u.att != 3000 {
+		t.Fatalf("att after re-enter %d, want 3000", u.att)
+	}
+}
