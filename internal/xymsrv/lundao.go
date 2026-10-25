@@ -154,6 +154,7 @@ type ldFoe struct {
 	DFName string
 	DFIcon int32
 	Zf     battle.Formation // 阵法（zhenfa.go）
+	W      int              // 威望（战报 w2，prestigeOf；假对手为 0）
 }
 
 func openLadder(st store.Store) *Ladder {
@@ -301,7 +302,7 @@ func (srv *Server) realFoe(uid int32, me *Player) *ldFoe {
 	for _, x := range team {
 		x.Pos += 100
 	}
-	f.Team, f.Leader, f.FP, f.Zf = team, p.leaderSkill(), p.teamCap(pets), p.formation()
+	f.Team, f.Leader, f.FP, f.Zf, f.W = team, p.leaderSkill(), p.teamCap(pets), p.formation(), prestigeOf(ro.Grade, p)
 	for k, x := range team[:min(2, len(team))] {
 		f.Faces[k] = x.Icon
 	}
@@ -466,7 +467,7 @@ func onFightLundao(s *Session, p *Player, m xym.Msg) {
 	r1, r2 := battle.CloneTeam(team1), battle.CloneTeam(team2)
 	res := s.simulate(p, team1, team2, [2]int32{p.leaderSkill(), foe.Leader}, foe.Zf, s.actRng())
 	rid := "lundao:" + dfNum(int32(recordSeq.Add(1)))
-	s.fightRecord(rid, foe.Name, foe.Grade, r1, r2, res.Record)
+	s.fightRecordW(rid, foe.Name, foe.Grade, foe.W, r1, r2, res.Record)
 	l.Times--
 	p.track(evLundao, 1)
 	if res.Win {

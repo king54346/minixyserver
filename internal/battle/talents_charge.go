@@ -222,7 +222,10 @@ func (b *battle) releaseCharge(u *unit, k *talent) {
 			b.propertyHurt(u, x, fxMagic(k), u.att*int64(k.param(1))/100+int64(float64(u.baseAtt)*k.tjX()/100), 4)
 		}
 	case famChongXing, famFengShen, famLiJian: // 消除三体 $r（b% 攻击）法术结界，c% 概率捆缚 / 僵化 / 混乱
-		ts := b.pickN(foes, 3)
+		ts := b.facing3(u) // 对方三体 = 对位及其左右（锁定站位，用户规则）
+		if len(ts) == 0 {
+			break
+		}
 		b.show(u, k.id, ts...)
 		st := map[family]stKey{famChongXing: stBind, famFengShen: stStiff, famLiJian: stConfuse}[k.fam]
 		for _, x := range ts {

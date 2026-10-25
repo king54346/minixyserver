@@ -117,6 +117,9 @@ func (s *Session) gearChanged(p *Player, _ int, suit bool) {
 	if len(l) > 0 {
 		s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0, "pets": l})
 	}
+	// 客户端的多套阵容数据（切换阵容时 C_SET_LINEUPS 原样发回）只从 S_SEND_LINEUP 来：穿脱后不发的话，它手里出战
+	// 阵容还是穿脱之前的装备，一切换阵容就把旧数据存回来，刚穿上的装备「自己掉了」（用户报）
+	s.SendExt("LINEUP_PTO.S_SEND_LINEUP", p.lineupsMsg())
 }
 
 // onSuitOn：把装备穿到出战位 fight_pos（按部位放；原来在别的位置上的先脱下）。

@@ -202,8 +202,9 @@ func (b *battle) enter(u *unit) {
 			}
 		}
 		if foes := b.foes(u); god != nil && len(foes) > 0 {
-			// 官方战报：仙族护法失去其上限 32%（不封顶，可致死），敌人受到两倍
-			o := foes[b.rng.IntN(len(foes))]
+			// 官方战报：仙族护法失去其上限 32%（不封顶，可致死），敌人受到两倍；优先打不处于无敌 / 暴走的敌人（图鉴）
+			pool := b.vulnerable(foes)
+			o := pool[b.rng.IntN(len(pool))]
 			cost := god.maxHP * int64(k.param(0)) / 100
 			b.show(u, k.id, o)
 			b.hurt(u, o, k.id, cost*2, false)
@@ -215,6 +216,7 @@ func (b *battle) enter(u *unit) {
 					}
 				}
 				if len(rest) > 0 {
+					rest = b.vulnerable(rest)
 					x := rest[b.rng.IntN(len(rest))]
 					b.show(u, k.id, x)
 					b.hurt(u, x, k.id, int64(float64(cost*2)*k.tjX()/100), false)
@@ -270,24 +272,30 @@ func (b *battle) enter(u *unit) {
 			}
 		}
 	}
-	if k := u.tal(famQianKunXiu); k != nil && b.chance(k.param(0)) {
-		// 捆缚敌方攻击最高的两名，另有 b% 概率使敌方攻击最低的两名本回合隐身。
+	if k := u.tal(famQianKunXiu); k != nil {
+		// a% 概率捆缚敌方攻击最高的两名；另有（单独判定的）b% 概率使敌方攻击最低的两名本回合隐身。
+		// 捆缚、隐身施放时都可被法术结界免疫（FAQ）；捆缚下次行动后清除，隐身到当前回合结束。
 		// 官方战报：ACT_DO(乾坤袖 → 敌方全体前阵) → BUFF 5231（捆缚，被不侵抵抗的不挂）。以前捆缚不带 buff 号，
 		// 客户端没有 BUFF 命令就不播捆缚特效。
 		foes := b.foes(u)
 		sortByAtt(foes)
-		if len(foes) > 0 {
+		bind, hide := b.chance(k.param(0)), b.chance(k.param(1))
+		if len(foes) > 0 && (bind || hide) {
 			b.show(u, k.id, foes...)
-			for _, x := range foes[:min(2, len(foes))] {
-				b.addStatus(x, stBind, 0, 1, true, qkxBindBuff, slotDebuff)
+			if bind {
+				for _, x := range foes[:min(2, len(foes))] {
+					b.addStatus(x, stBind, 0, 1, true, qkxBindBuff, slotDebuff)
+				}
 			}
-			if low := foes[max(0, len(foes)-2):]; len(foes) > 2 && b.chance(k.param(1)) {
-				for _, x := range low {
-					b.setStatus(x, stHidden, 0, 1, false, hiddenBuff, slotBuff)
+			if hide {
+				for _, x := range foes[max(0, len(foes)-2):] {
+					if x.mshield == 0 {
+						b.setStatus(x, stHidden, 0, 1, false, hiddenBuff, slotBuff)
+					}
 				}
 			}
 		}
-		if k.tjOn() && b.chance(k.tjPct()) {
+		if k.tjOn() && b.chance(k.tjPct()) { // 天将：单独判定，提升自身攻击力的 60% 直到战斗结束
 			b.changeAtt(u, k.id, u.att*60/100)
 		}
 	}

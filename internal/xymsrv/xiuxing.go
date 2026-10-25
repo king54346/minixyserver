@@ -102,7 +102,9 @@ type XiuxingState struct {
 	Forced   []*XQiyu `json:"forced,omitempty"`
 }
 
-// yuanCands 是派出的护法里可结缘 / 可同修的（每张卡至多一条）。
+// yuanCands 是派出的护法里可结缘 / 可同修的（每张卡结缘、同修各至多一条）。
+// 之前每张卡只取第一条可用的缘分：卡上还有没结缘的缘分时，已结缘那条永远出不了同修奇遇，同修值满 100 按了按钮
+// 也一直不触发、不清零（用户报）。
 func (p *Player) yuanCands(types []int32) []*XQiyu {
 	var out []*XQiyu
 	for _, t := range types {
@@ -110,16 +112,20 @@ func (p *Player) yuanCands(types []int32) []*XQiyu {
 		if pet == nil {
 			continue
 		}
+		var jy, tx bool
 		for _, rid := range gamedata.ExtendRelates[t] {
 			switch {
 			case !slices.Contains(pet.Combine, rid):
-				out = append(out, &XQiyu{Type: qyJieyuan, Kind: "jieyuan", Pet: t, Rid: rid})
+				if !jy {
+					jy = true
+					out = append(out, &XQiyu{Type: qyJieyuan, Kind: "jieyuan", Pet: t, Rid: rid})
+				}
 			case !slices.Contains(pet.Together, rid) && gamedata.Relates[rid] != nil && len(gamedata.Relates[rid].TogetherNPet) > 0:
-				out = append(out, &XQiyu{Type: qyTongxiu, Kind: "tongxiu", Pet: t, Rid: rid})
-			default:
-				continue
+				if !tx {
+					tx = true
+					out = append(out, &XQiyu{Type: qyTongxiu, Kind: "tongxiu", Pet: t, Rid: rid})
+				}
 			}
-			break
 		}
 	}
 	return out

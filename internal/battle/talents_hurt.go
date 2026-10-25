@@ -89,9 +89,20 @@ func (b *battle) leiying(src, t *unit, n int64, physical bool) bool {
 		x.leiying++
 		b.show(x, k.id, t)
 		b.hurt(src, x, k.id, n, physical)
+		// 触发的遁让照遁让本身的规则：与后场随机一名未阵亡护法交换；代承伤害的雷震子不算在内（用户报：
+		// 每次都和后阵的雷震子互换），后场只剩雷震子时才和它换
 		if bn := b.bench(t.side); len(bn) > 0 && t.alive() {
+			var pool []*unit
+			for _, y := range bn {
+				if y != x {
+					pool = append(pool, y)
+				}
+			}
+			if len(pool) == 0 {
+				pool = bn
+			}
 			b.show(t, t.tals[famDunRang].id, t)
-			b.swap(t, bn[b.rng.IntN(len(bn))])
+			b.swap(t, pool[b.rng.IntN(len(pool))])
 		}
 		return true
 	}

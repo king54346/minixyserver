@@ -207,6 +207,15 @@ func (u *unit) tal(f family) *talent {
 	return u.tals[f]
 }
 
+// talAll 是某族神通的所有来源（自带 + 套装各一个，见 dupTals）；僵化时为空。突袭、驭兵等加攻类每个来源各自判定。
+func (u *unit) talAll(f family) []*talent {
+	k := u.tal(f)
+	if k == nil {
+		return nil
+	}
+	return append([]*talent{k}, u.dupTals[f]...)
+}
+
 func newUnit(f *Fighter, side int) *unit {
 	u := &unit{Fighter: f, side: side, att: int64(f.Att), hp: int64(f.HP), maxHP: int64(f.MaxHP),
 		baseAtt: int64(f.Att), peakAtt: int64(f.Att), tals: map[family]*talent{}}

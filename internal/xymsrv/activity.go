@@ -183,11 +183,18 @@ func maxTalentLen(pi *gamedata.PetInfo) int {
 // fightRecord 发 S_FIGHT_RECORD。对方是玩家阵容（有神通满的卡）时 w2 填对方威望：客户端在 w2 为 0 时把对方
 // 所有卡的 skillfull 清零（war/netwar.lua，与我方 w1 同理），金卡左上角的神通满徽标就出不来。
 func (s *Session) fightRecord(rid, name2 string, level2 int, team1, team2 []*battle.Fighter, record []byte) {
-	w2 := 0
+	s.fightRecordW(rid, name2, level2, 0, team1, team2, record)
+}
+
+// fightRecordW 同 fightRecord，w2 是对方玩家的威望（prestigeOf；0 = 不是玩家 / 不知道，按等级估计）。
+// 之前对方一律按「等级 × 10」估计，满级玩家永远是 500（用户报）。
+func (s *Session) fightRecordW(rid, name2 string, level2, w2 int, team1, team2 []*battle.Fighter, record []byte) {
+	full := false
 	for _, f := range team2 {
-		if f.SkillFull {
-			w2 = max(level2, 1) * 10 // 估计：同 prestige 的口径（等级 × 10）
-		}
+		full = full || f.SkillFull
+	}
+	if w2 <= 0 && full {
+		w2 = max(level2, 1) * 10 // 估计：同 prestige 的口径（等级 × 10）
 	}
 	s.SendExt("FIGHT_PTO.S_FIGHT_RECORD", xym.Msg{
 		"canop": 14, "rid": rid,
@@ -201,8 +208,13 @@ func (s *Session) fightRecord(rid, name2 string, level2 int, team1, team2 []*bat
 // skillfull 清零（war/netwar.lua），神通满的徽标就出不来。官方威望来自成就（本服没有），估计为
 // 人物等级 × 10 + 通关过的关卡数。
 func (s *Session) prestige() int {
-	n := s.role.Grade * 10
-	if p := s.player; p != nil {
+	return prestigeOf(s.role.Grade, s.player)
+}
+
+// prestigeOf：人物等级 × 10 + p 通关过的关卡数（p 可为 nil）。
+func prestigeOf(grade int, p *Player) int {
+	n := grade * 10
+	if p != nil {
 		for _, pr := range p.Prog {
 			if pr != nil {
 				for _, t := range pr.Gates {

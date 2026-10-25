@@ -57,6 +57,21 @@ func (b *battle) pickTarget(u *unit) *unit {
 	return first
 }
 
+// facing3 是 u 的「对面三位」/「对位三体」：敌方前阵站在 u 对位槽位及其左右两槽的存活护法（对位在前）。位置是锁定的：
+// 对位已死或为空也不改选别人——1 号位只打对面 1、2 号，5 号位只打 4、5 号（用户规则）。
+func (b *battle) facing3(u *unit) []*unit {
+	s := u.slot()
+	var out []*unit
+	for _, want := range []int{s, s - 1, s + 1} {
+		for _, x := range b.frontOf(1 - u.side) {
+			if x.slot() == want {
+				out = append(out, x)
+			}
+		}
+	}
+	return out
+}
+
 // adjacent 返回 t 左右相邻（槽位 ±1）的存活前阵单位。
 func (b *battle) adjacent(t *unit) []*unit {
 	var out []*unit
@@ -94,6 +109,20 @@ func (b *battle) deadAllies(side int) []*unit {
 func (b *battle) invincible(x *unit) bool {
 	// 诈死的免疫来自神通：被僵化（如踏浪）就失效
 	return x.has(stImmune) != nil || x.has(stZhasi) != nil && x.has(stStiff) == nil
+}
+
+// vulnerable 是 l 中不处于无敌 / 暴走的护法；全都无敌时原样返回 l（「优先攻击不处于无敌和暴走的敌方护法」）。
+func (b *battle) vulnerable(l []*unit) []*unit {
+	var out []*unit
+	for _, x := range l {
+		if !b.invincible(x) {
+			out = append(out, x)
+		}
+	}
+	if len(out) == 0 {
+		return l
+	}
+	return out
 }
 
 // easyDie 是 side 一方的「易死目标」：前阵生命值最少且不具备无敌（伤害免疫）的护法（FAQ：冲锋、乾坤破）。

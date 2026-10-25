@@ -62,13 +62,18 @@ func (b *battle) died(t *unit) {
 		delete(t.tals, f)
 	}
 	t.borrowed = nil
-	t.swords = 0 // 仙剑：死亡则清除（图鉴 FAQ）
+	t.swords = 0                   // 仙剑：死亡则清除（图鉴 FAQ）
+	stiff := t.has(stStiff) != nil // 僵化（踏浪、蛟魔王、水之元…）中阵亡：死亡神通（神佑等）也发动不了（用户规则）
 	b.leaveClear(t, true)
 	if b.over {
 		return
 	}
 	if t.reviveIn == 0 {
 		defer b.markRevive(t)
+	}
+	if stiff {
+		b.devour(t) // 对方的烈焰吞噬照常结算
+		return
 	}
 	if hasAny(t, deathFamilies) {
 		b.firstSkill(t, skDeath)
@@ -423,16 +428,8 @@ func (b *battle) deathMore(t *unit) {
 	}
 	if k := t.tal(famShengSiBie); k != nil {
 		// 对位三体流失禺狨王 a% 上限的生命，血量低于禺狨王上限 b% 的跳过一次行动（捆缚）
-		var ts []*unit
-		for _, o := range b.foes(t) {
-			if o.slot() == t.slot() {
-				ts = append([]*unit{o}, b.adjacent(o)...)
-			}
-		}
-		if len(ts) == 0 {
-			ts = b.pickN(b.foes(t), 3)
-		}
-		if len(ts) > 0 {
+		// 对位三体 = 对位及其左右两槽（锁定站位：对位已死 / 为空也只打这几个槽位，用户规则）
+		if ts := b.facing3(t); len(ts) > 0 {
 			b.show(t, k.id, ts...)
 			for _, x := range ts {
 				b.loseHP(t, x, k.id, k.tjBoost(t.maxHP*int64(k.param(0))/100))

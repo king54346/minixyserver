@@ -368,6 +368,15 @@ func (b *battle) spEffect(u, t *unit, id int32, sp int, spVal int64) {
 		if b.chance(int(spVal)) {
 			b.clearAllDebuffs(t)
 		}
+	case 8: // 换位（大鹏展翅、放下屠刀、入剑诀、狂风、风鹏正举）：a% 概率令目标与其后阵随机一名存活护法换位，
+		// 换上来的护法被捆缚（用户规则）
+		if t.front() && b.chance(int(spVal)) {
+			if bn := b.bench(t.side); len(bn) > 0 {
+				x := bn[b.rng.IntN(len(bn))]
+				b.swap(t, x)
+				b.bindEntered(x)
+			}
+		}
 	case 10: // 物理结界
 		b.addShield(t, u.maxHP*spVal/100, false)
 	case 11: // 属性结界

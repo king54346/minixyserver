@@ -63,6 +63,7 @@ type dbFoe struct {
 	Face  int               `json:"face"`
 	Team  []*battle.Fighter `json:"team"`
 	Zf    battle.Formation  `json:"zf,omitempty"` // 对手的阵法（zhenfa.go）
+	W     int               `json:"w,omitempty"`  // 威望（战报 w2）
 }
 
 func (p *Player) duobao() *DuobaoState {
@@ -83,7 +84,7 @@ func (s *Session) dbRegister(team []*battle.Fighter) {
 	if len(team) == 0 {
 		return
 	}
-	f := &dbFoe{UID: s.role.UID, Name: s.role.Name, Level: s.role.Grade, Face: s.role.Icon, Team: battle.CloneTeam(team)}
+	f := &dbFoe{UID: s.role.UID, Name: s.role.Name, Level: s.role.Grade, Face: s.role.Icon, Team: battle.CloneTeam(team), W: s.prestige()}
 	if s.player != nil {
 		f.Zf = s.player.formation()
 	}
@@ -239,7 +240,7 @@ func onDuobaoFight(s *Session, p *Player, m xym.Msg) {
 		p.track(evDuobaoWin, 1)
 	}
 	rid := fmt.Sprintf("duobao:%d", d.Fights)
-	s.fightRecord(rid, foe.Name, foe.Level, r1, r2, res.Record)
+	s.fightRecordW(rid, foe.Name, foe.Level, foe.W, r1, r2, res.Record)
 	delta := &bagDelta{}
 	cash := int32(0)
 	if res.Win {

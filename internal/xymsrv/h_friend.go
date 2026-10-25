@@ -401,6 +401,7 @@ func onFightFriend(s *Session, p *Player, m xym.Msg) {
 	}
 	other.role = ro
 	team2, _ := other.dyTeam(nil)
+	w2 := prestigeOf(ro.Grade, other)
 	other.mu.Unlock()
 	team1, _ := p.dyTeam(nil)
 	if len(team1) == 0 || len(team2) == 0 {
@@ -412,7 +413,7 @@ func onFightFriend(s *Session, p *Player, m xym.Msg) {
 	}
 	r1, r2 := battle.CloneTeam(team1), battle.CloneTeam(team2)
 	res := s.simulate(p, team1, team2, [2]int32{p.leaderSkill(), other.leaderSkill()}, other.formation(), s.actRng())
-	s.fightRecord(strconv.FormatInt(recordSeq.Add(1), 10), ro.Name, ro.Grade, r1, r2, res.Record)
+	s.fightRecordW(strconv.FormatInt(recordSeq.Add(1), 10), ro.Name, ro.Grade, w2, r1, r2, res.Record)
 	p.track(evFriendFight, 1)
 	r := rewardMsg(3, nil)
 	if res.Win {

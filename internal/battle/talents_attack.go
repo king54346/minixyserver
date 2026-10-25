@@ -21,15 +21,11 @@ var raceBane = []struct {
 // tuxi：突袭——攻击时 a% 概率提升当前攻击 50%（攻击后清除），并必中。
 // 官方战报（session-02）：突袭加当前攻击的 50%（1192/1202）。
 func (b *battle) tuxi(u *unit) {
-	k := u.tal(famTuXi)
-	if k == nil {
-		return
-	}
 	// 自带突袭 + 套装突袭：各自判定，都中就加两次（用户报：只触发一次）
-	for _, k := range append([]*talent{k}, u.dupTals[famTuXi]...) {
+	for _, k := range u.talAll(famTuXi) {
 		if b.chance(k.param(0)) {
 			b.tempUp(u, k, u.atkBase()/2+int64(float64(u.atkBase())*k.tjX()/100)) // 激发：额外 $x%，且不触发先攻、逆势
-			b.buff(u, tuxiHitBuff, 1)                                 // 官方战报：突袭后挂「命中buff」5461（必中）
+			b.buff(u, tuxiHitBuff, 1)                                             // 官方战报：突袭后挂「命中buff」5461（必中）
 		}
 	}
 }
@@ -121,8 +117,10 @@ func (b *battle) beforeAttack(u, t *unit) {
 			u.dmgUp += k.param(0)
 		}
 	}
-	if k := u.tal(famTaChao); k != nil && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100) // 「提升 60% 初始攻击力」
+	for _, k := range u.talAll(famTaChao) {
+		if b.chance(k.param(0)) {
+			b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100) // 「提升 60% 初始攻击力」
+		}
 	}
 	if k := u.tal(famShouWang); k != nil && b.chance(k.param(0)) {
 		b.show(u, k.id, u)
@@ -132,19 +130,28 @@ func (b *battle) beforeAttack(u, t *unit) {
 	// （背水、霆威…）之前：官方战报魔主在突袭之前、背水 / 霆威 / 分击在突袭之后。仙尊等群体伤害插在突袭和普攻
 	// 之间会打断突袭的出手动画。
 	b.tuxi(u)
+	// 下面这些加攻类：自带 + 套装同族各自判定（同突袭，用户规则）
 	for _, fam := range []family{famPoYan, famQuLei, famTaLang, famDaoHuo} { // 照描述加初始攻击的 50%
-		if k := u.tal(fam); k != nil && b.chance(k.param(0)) {
-			b.tempUp(u, k, u.baseAtt/2)
+		for _, k := range u.talAll(fam) {
+			if b.chance(k.param(0)) {
+				b.tempUp(u, k, u.baseAtt/2)
+			}
 		}
 	}
-	if k := u.tal(famBeiShui); k != nil && u.hp < t.hp && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100)
+	for _, k := range u.talAll(famBeiShui) {
+		if u.hp < t.hp && b.chance(k.param(0)) {
+			b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100)
+		}
 	}
-	if k := u.tal(famShiQiang); k != nil && u.att > t.att && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100)
+	for _, k := range u.talAll(famShiQiang) {
+		if u.att > t.att && b.chance(k.param(0)) {
+			b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100)
+		}
 	}
-	if k := u.tal(famYuBing); k != nil && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.atkBase()*int64(k.param(1))/100+int64(float64(u.atkBase())*k.tjX()/100))
+	for _, k := range u.talAll(famYuBing) {
+		if b.chance(k.param(0)) {
+			b.tempUp(u, k, u.atkBase()*int64(k.param(1))/100+int64(float64(u.atkBase())*k.tjX()/100))
+		}
 	}
 	if k := u.tal(famTingWei); k != nil && t.maxHP > 0 && b.chance(k.param(0)) {
 		b.tempUp(u, k, u.atkBase()*(t.maxHP-t.hp)/t.maxHP)
@@ -159,7 +166,7 @@ func (b *battle) beforeAttack(u, t *unit) {
 	if k := u.tal(famPoWang); k != nil {
 		// 攻击前各有 a% 概率将对面三位护法生命上限恢复到进入战斗的初始值
 		//（Fighter.MaxHP；changeMaxHP 会把超出上限的当前生命一并压回）。
-		ts := b.pickN(b.foes(u), 3)
+		ts := b.facing3(u) // 对面三位 = 对位及其左右（锁定站位）
 		var hit []*unit
 		for _, x := range ts {
 			if b.chance(k.param(0)) {
@@ -189,8 +196,10 @@ func (b *battle) beforeAttack(u, t *unit) {
 		b.tempUp(u, k, int64(float64(u.atkBase())*k.tjX()/100))
 	}
 	for _, rb := range raceBane {
-		if k := u.tal(rb.fam); k != nil && t.Race == rb.race && b.chance(k.param(0)) {
-			b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100)
+		for _, k := range u.talAll(rb.fam) {
+			if t.Race == rb.race && b.chance(k.param(0)) {
+				b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100)
+			}
 		}
 	}
 	if s := u.has(stYizhi); s != nil && t.Race == raceGhost { // 遗志：目标是魔族时额外提升

@@ -117,7 +117,7 @@ func onChallengeGuard(s *Session, p *Player, m xym.Msg) {
 	}
 	r1, r2 := battle.CloneTeam(team1), battle.CloneTeam(foe.Team)
 	res := s.simulate(p, team1, battle.CloneTeam(foe.Team), [2]int32{p.leaderSkill(), foe.Leader}, foe.Zf, s.actRng())
-	s.fightRecord(strconv.FormatInt(recordSeq.Add(1), 10), foe.Name, foe.Grade, r1, r2, res.Record)
+	s.fightRecordW(strconv.FormatInt(recordSeq.Add(1), 10), foe.Name, foe.Grade, foe.W, r1, r2, res.Record)
 	typ := 3
 	if res.Win {
 		typ = 2
