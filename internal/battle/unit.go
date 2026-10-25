@@ -67,6 +67,7 @@ type unit struct {
 	poison       []poison
 	hurtUp       int // 会猎：受到物理伤害增加 %
 	tempAtt      int64
+	tempEpoch    int   // 攻击重置为初始值的次数（回后阵 benchReset、阵亡）：攻击行为中途被重置过，结束时就不再扣临时加攻
 	dmgUp        int   // 本次攻击行为的伤害提高 %（灭法、异态；结算伤害时乘，attackAction 结束时还原）
 	tempBase     int64 // 当前攻击行为开始时已有的临时加攻（外层攻击行为留下的），见 atkBase
 	acted        bool

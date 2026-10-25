@@ -62,7 +62,9 @@ func (b *battle) died(t *unit) {
 		delete(t.tals, f)
 	}
 	t.borrowed = nil
-	t.swords = 0                   // 仙剑：死亡则清除（图鉴 FAQ）
+	t.swords = 0                 // 仙剑：死亡则清除（图鉴 FAQ）
+	t.tempAtt, t.tempBase = 0, 0 // 临时加攻随阵亡失效（复活回到初始攻击，endAction 不再扣）
+	t.tempEpoch++
 	stiff := t.has(stStiff) != nil // 僵化（踏浪、蛟魔王、水之元…）中阵亡：死亡神通（神佑等）也发动不了（用户规则）
 	b.leaveClear(t, true)
 	if b.over {
