@@ -6,7 +6,7 @@
 
 在线的角色会先被踢下线。注意：护法 / 装备 / 法术书会整体换成完美配置，原有的不保留；闯关进度等其余数据保留。
 
-连接：SSH 到云服后调本机管理接口 POST 127.0.0.1:28418/perfect_uid（管理接口只监听服务器本机）。
+连接：SSH 到云服后调本机管理接口 POST 127.0.0.1:28418/perfect_uid（管理接口只监听服务器本机，端口可用 XYM_ADMIN 覆盖）。
 密码不写在脚本里：读环境变量 XYM_SSH_PWD，没有就运行时输入。主机可用 XYM_SSH_HOST 覆盖。
 依赖：pip install paramiko
 """
@@ -18,7 +18,7 @@ import sys
 import paramiko
 
 HOST = os.environ.get("XYM_SSH_HOST", "121.37.152.248")
-ADMIN = "http://127.0.0.1:28418/perfect_uid"
+ADMIN = os.environ.get("XYM_ADMIN", "http://127.0.0.1:28418/perfect_uid")
 
 
 def main():
