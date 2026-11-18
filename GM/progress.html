@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>关卡进度 - 小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  a.btnlink { font: inherit; padding: 4px 10px; border: 1px solid #374151; border-radius: 4px;
+    background: #374151; color: #fff; text-decoration: none; white-space: nowrap; }
+  a.btnlink:hover { background: #4b5563; border-color: #4b5563; }
+  main { display: grid; grid-template-columns: 330px 1fr; gap: 12px; padding: 12px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, select, textarea, button { font: inherit; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button.gray { background: #6b7280; border-color: #6b7280; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: left; }
+  tr.sel { background: #dbeafe; }
+  tbody tr { cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .muted { color: #6b7280; font-size: 12px; }
+  .online { color: #16a34a; }
+  .big { font-size: 15px; font-weight: bold; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 160px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; }
+  #players { max-height: 65vh; overflow: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>关卡进度</h1>
+  <a class="btnlink" href="/" target="_blank" rel="noopener">GM 主页 ↗</a>
+  <a class="btnlink" href="/xiuwei.html" target="_blank" rel="noopener">修炼 ↗</a>
+  <a class="btnlink" href="/dongfu.html" target="_blank" rel="noopener">洞府建筑 ↗</a>
+  <a class="btnlink" href="/pets.html" target="_blank" rel="noopener">护法培养 ↗</a>
+  <span id="status" class="muted">未连接</span>
+</header>
+<main>
+  <section>
+    <h2>角色 <button class="gray" id="btnRefresh">刷新</button></h2>
+    <div class="row"><input id="filter" placeholder="按名字 / uid 筛选" style="flex:1"></div>
+    <div id="players"><table><thead><tr><th>uid</th><th>名字</th><th>等级</th><th></th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <section id="sec0">
+      <h2>普通关卡 <span id="tip0" class="muted">（先在左边选一个角色）</span></h2>
+      <div class="row" id="info0"></div>
+      <div class="row">
+        第 <select id="map0" disabled></select> 章
+        第 <select id="idx0" disabled></select> 关
+        <button id="btnSet0" disabled>设置</button>
+        <button class="gray" id="btnClear0" disabled>清空</button>
+        <span class="muted">任务号 <span id="task0">—</span></span>
+      </div>
+    </section>
+    <section id="sec1">
+      <h2>精英关卡 <span id="tip1" class="muted">（先在左边选一个角色）</span></h2>
+      <div class="row" id="info1"></div>
+      <div class="row">
+        第 <select id="map1" disabled></select> 章
+        第 <select id="idx1" disabled></select> 关
+        <button id="btnSet1" disabled>设置</button>
+        <button class="gray" id="btnClear1" disabled>清空</button>
+        <span class="muted">任务号 <span id="task1">—</span></span>
+      </div>
+      <div class="muted">设置后自动补全此前所有任务与关卡的 1 星通关记录；精英关卡还需普通同任务已通关才能进入。</div>
+    </section>
+    <section><h2>日志</h2><div id="log"></div></section>
+  </div>
+</main>
+<script>
+let players = [], prog = null, sel = null;
+
+const $ = id => document.getElementById(id);
+function log(msg, bad) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${bad ? "✗ " : ""}${msg}\n` + $("log").textContent;
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((j && j.error) || ("HTTP " + r.status));
+  return j;
+}
+async function loadStatus() {
+  try {
+    const s = await api("/api/status");
+    $("status").textContent = s.connected ? `已连接 ${s.admin}（${s.mode}）` : "未连接";
+    $("status").style.color = s.connected ? "#16a34a" : "#dc2626";
+  } catch (e) { $("status").textContent = "未连接"; }
+}
+async function loadPlayers() {
+  players = await api("/api/players") || [];
+  renderPlayers();
+}
+function renderPlayers() {
+  const tb = $("players").querySelector("tbody");
+  tb.innerHTML = "";
+  const f = $("filter").value.trim().toLowerCase();
+  for (const p of players) {
+    if (f && !String(p.uid).includes(f) && !(p.name || "").toLowerCase().includes(f)) continue;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${p.uid}</td><td></td><td>${p.grade}</td><td class="online">${p.online ? "在线" : ""}</td>`;
+    tr.children[1].textContent = p.name;
+    tr.onclick = () => selectPlayer(p.uid);
+    if (sel === p.uid) tr.classList.add("sel");
+    tb.appendChild(tr);
+  }
+}
+async function selectPlayer(uid) {
+  sel = uid;
+  renderPlayers();
+  prog = await api("/api/progress?uid=" + uid);
+  if (sel !== uid) return;
+  renderAll();
+  log(`已选角色：${uid}`);
+}
+function renderAll() {
+  const total = prog ? prog.maps.reduce((a, m) => a + m.count, 0) : 0;
+  for (const typ of [0, 1]) {
+    const r = typ === 0 ? prog.common : prog.elite;
+    const info = $("info" + typ);
+    info.innerHTML = "";
+    if (!prog) { $("tip" + typ).textContent = "（先在左边选一个角色）"; continue; }
+    $("tip" + typ).textContent = "";
+    const span = document.createElement("span");
+    span.className = "big";
+    span.textContent = r.last > 0 ? `第 ${r.map} 章 第 ${r.index} 关` : "未开始";
+    info.append(span, `　已通关任务：${r.stars} / ${total}　最后任务号：${r.last}`);
+    // 章节 / 序号下拉
+    const ms = $("map" + typ), is = $("idx" + typ);
+    ms.innerHTML = "";
+    for (const m of prog.maps) {
+      const o = document.createElement("option");
+      o.value = m.id; o.textContent = "第 " + m.id + " 章";
+      ms.appendChild(o);
+    }
+    ms.disabled = false;
+    is.disabled = false;
+    ms.onchange = () => fillIdx(typ);
+    is.onchange = () => updateTask(typ);
+    // 默认定位到当前进度下一关
+    if (r.last > 0) {
+      ms.value = String(r.map);
+      fillIdx(typ);
+      is.value = String(Math.min(r.index + 1, 15));
+    } else {
+      ms.value = "1";
+      fillIdx(typ);
+    }
+    updateTask(typ);
+    $("btnSet" + typ).disabled = false;
+    $("btnClear" + typ).disabled = false;
+  }
+}
+function fillIdx(typ) {
+  const ms = $("map" + typ), is = $("idx" + typ);
+  const m = prog.maps.find(x => x.id === Number(ms.value));
+  is.innerHTML = "";
+  for (let i = 1; i <= (m ? m.count : 0); i++) {
+    const o = document.createElement("option");
+    o.value = i; o.textContent = "第 " + i + " 关";
+    is.appendChild(o);
+  }
+  updateTask(typ);
+}
+function updateTask(typ) {
+  const m = Number($("map" + typ).value), i = Number($("idx" + typ).value);
+  $("task" + typ).textContent = (m && i) ? (m * 100 + i) : "—";
+}
+async function setProg(typ) {
+  if (!prog) return log("先选一个角色", true);
+  const m = Number($("map" + typ).value), i = Number($("idx" + typ).value);
+  if (!m || !i) return log("先选章节和关卡", true);
+  const task = m * 100 + i;
+  try {
+    prog = await api("/api/progress_set", {uid: prog.uid, typ, task});
+    renderAll();
+    log(`${typ === 0 ? "普通" : "精英"}关卡已设到 第 ${m} 章 第 ${i} 关（任务 ${task}）`);
+  } catch (e) { log(e.message, true); }
+}
+async function clearProg(typ) {
+  if (!prog) return log("先选一个角色", true);
+  try {
+    prog = await api("/api/progress_set", {uid: prog.uid, typ, task: 0});
+    renderAll();
+    log(`${typ === 0 ? "普通" : "精英"}关卡进度已清空`);
+  } catch (e) { log(e.message, true); }
+}
+for (const typ of [0, 1]) {
+  $("btnSet" + typ).onclick = () => setProg(typ);
+  $("btnClear" + typ).onclick = () => clearProg(typ);
+}
+$("btnRefresh").onclick = () => loadPlayers().catch(e => log(e.message, true));
+$("filter").oninput = renderPlayers;
+loadStatus();
+loadPlayers().catch(e => log(e.message, true));
+</script>
+</body>
+</html>

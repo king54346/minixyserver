@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>宝箱掉落 - 小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  a.btnlink { font: inherit; padding: 4px 10px; border: 1px solid #374151; border-radius: 4px;
+    background: #374151; color: #fff; text-decoration: none; white-space: nowrap; }
+  a.btnlink:hover { background: #4b5563; border-color: #4b5563; }
+  main { display: grid; grid-template-columns: 240px 1fr; gap: 12px; padding: 12px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, select, button { font: inherit; padding: 3px 6px; border: 1px solid #d1d5db; border-radius: 4px; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button.gray { background: #6b7280; border-color: #6b7280; }
+  button.red { background: #dc2626; border-color: #dc2626; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: left; }
+  th { background: #f9fafb; font-weight: 600; }
+  .boxitem { padding: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; border: 1px solid #e5e7eb; }
+  .boxitem:hover { background: #f3f4f6; }
+  .boxitem.sel { background: #dbeafe; border-color: #93c5fd; }
+  .w { width: 70px; }
+  .n { width: 60px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .muted { color: #6b7280; font-size: 12px; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 100px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; margin-top: 8px; }
+  .pct { color: #2563eb; }
+  .lim { color: #b45309; font-weight: 600; }
+  #dropsWrap { max-height: 68vh; overflow: auto; }
+</style>
+</head>
+<body>
+<div style="padding:8px 20px"><a href="/game-rules.html" target="_blank">玩法配置：注册／次数／价格／商店／兑换／奖励／神通</a></div>
+<header>
+  <h1>宝箱掉落调控</h1>
+  <a class="btnlink" href="/" target="_blank" rel="noopener">GM 主页 ↗</a>
+  <a class="btnlink" href="/bag.html" target="_blank" rel="noopener">物品栏 ↗</a>
+  <span id="status" class="muted">未连接</span>
+</header>
+<main>
+  <section>
+    <h2>宝箱 <button class="gray" id="btnReload">刷新</button></h2>
+    <div id="boxlist" class="muted">加载中…</div>
+    <div class="muted" style="margin-top:8px">说明：保存后立即生效，服务重启后仍保留。概率列按全部权重计算，实际掉落会先按人物等级筛选。</div>
+  </section>
+  <section>
+    <h2>掉落表 <span id="curName" class="muted"></span> <button class="gray" id="btnAdd" style="float:right">+ 新增一行</button></h2>
+    <div id="dropsWrap">
+      <table>
+        <thead><tr><th>道具</th><th>权重</th><th>数量</th><th>等级限制</th><th>概率</th><th></th></tr></thead>
+        <tbody id="drops"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span>总权重：<b id="totalW">0</b></span>
+      <button id="btnSave">保存并生效</button>
+      <button class="gray" id="btnReset">恢复预设权重</button>
+      <span id="saveTip" class="muted"></span>
+    </div>
+    <div id="log"></div>
+  </section>
+</main>
+<script>
+let data = {}, cur = null;
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent = (new Date().toLocaleTimeString()) + ' ' + msg + '\n' + el.textContent;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function api(url, opt) {
+  const r = await fetch(url, opt);
+  if (!r.ok) { const t = await r.text(); throw new Error(t); }
+  return r.json();
+}
+
+async function load() {
+  try {
+    data = await api('/api/box');
+    document.getElementById('status').textContent = '已连接';
+    document.getElementById('status').className = 'muted online';
+    renderList();
+    if (!cur || !data[cur]) cur = Object.keys(data).sort()[0];
+    renderDrops();
+  } catch (e) {
+    document.getElementById('status').textContent = '连接失败：' + e.message;
+    log('加载失败：' + e.message);
+  }
+}
+
+const NAMES = {10002:'黄金宝箱',10003:'黄金钥匙',10004:'白银宝箱',10005:'白银钥匙',10006:'黑铁宝箱',10007:'黑铁钥匙'};
+
+function renderList() {
+  const el = document.getElementById('boxlist');
+  el.innerHTML = '';
+  Object.keys(data).sort((a,b)=>a-b).forEach(id => {
+    const d = document.createElement('div');
+    d.className = 'boxitem' + (String(cur)===String(id) ? ' sel' : '');
+    d.innerHTML = '<b>' + id + '</b> ' + (NAMES[id]||'宝箱') + '<div class="muted">' + data[id].drops.length + ' 项 · 魂值 ' + data[id].soulMin + '~' + data[id].soulMax + '</div>';
+    d.onclick = () => { cur = id; renderList(); renderDrops(); };
+    el.appendChild(d);
+  });
+}
+
+function total() { return (data[cur]?.drops || []).reduce((a,x)=>a + (+x.w || 0), 0); }
+
+function renderDrops() {
+  if (!data[cur]) return;
+  document.getElementById('curName').textContent = '#' + cur + ' ' + (NAMES[cur]||'') + '（等级 ' + (data[cur].soulMin) + '~' + data[cur].soulMax + ' 魂）';
+  const tb = document.getElementById('drops');
+  tb.innerHTML = '';
+  const t = total();
+  data[cur].drops.forEach((x, i) => {
+    const tr = document.createElement('tr');
+    const pct = t > 0 ? (x.w / t * 100).toFixed(2) + '%' : '-';
+    const lim = x.gradeOnly && x.gradeOnly.length ? '<span class="lim">仅 ' + x.gradeOnly.join(' / ') + ' 级</span>' : '<span class="muted">全部</span>';
+    tr.innerHTML = '<td>' + esc(x.name || x.code) + '</td>' +
+      '<td><input class="w" type="number" min="0" value="' + x.w + '" data-i="' + i + '" data-k="w"></td>' +
+      '<td><input class="n" type="number" min="1" value="' + x.cnt + '" data-i="' + i + '" data-k="cnt"></td>' +
+      '<td>' + lim + '</td>' +
+      '<td class="pct">' + pct + '</td>' +
+      '<td><button class="red" data-del="' + i + '">删除</button></td>';
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('input').forEach(inp => {
+    inp.oninput = () => {
+      const i = +inp.dataset.i, k = inp.dataset.k;
+      data[cur].drops[i][k] = +inp.value || 0;
+      const weight = total();
+      tb.querySelectorAll('.pct').forEach((cell, index) => {
+        cell.textContent = weight > 0 ? (data[cur].drops[index].w / weight * 100).toFixed(2) + '%' : '-';
+      });
+      document.getElementById('totalW').textContent = weight;
+    };
+  });
+  tb.querySelectorAll('button[data-del]').forEach(b => {
+    b.onclick = () => { data[cur].drops.splice(+b.dataset.del, 1); renderDrops(); };
+  });
+  document.getElementById('totalW').textContent = t;
+}
+
+document.getElementById('btnReload').onclick = load;
+document.getElementById('btnAdd').onclick = () => {
+  if (!data[cur]) return;
+  const code = prompt('输入要新增的道具编码（如 WP10015 / GPFS2 / ZB1509）');
+  if (!code) return;
+  data[cur].drops.push({code: code.trim().toUpperCase(), name: '', w:1, cnt:1});
+  renderDrops();
+  log('已添加 ' + code + '，请填权重后点保存');
+};
+document.getElementById('btnReset').onclick = async () => {
+  if (!data[cur]) return;
+  if (!confirm('确定恢复宝箱 #' + cur + ' 的预设掉落吗？当前未保存的修改会丢失。')) return;
+  try {
+    const r = await api('/api/box_reset', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({box:+cur})});
+    log('已恢复预设权重：' + JSON.stringify(r));
+    document.getElementById('saveTip').textContent = '已恢复预设权重';
+    load();
+  } catch (e) {
+    log('恢复失败：' + e.message);
+    document.getElementById('saveTip').textContent = '恢复失败';
+  }
+};
+document.getElementById('btnSave').onclick = async () => {
+  if (!data[cur]) return;
+  try {
+    const body = JSON.stringify({box:+cur, drops:data[cur].drops.map(x=>({w:+x.w, code:x.code, cnt:+x.cnt}))});
+    const r = await api('/api/box', {method:'POST', headers:{'Content-Type':'application/json'}, body});
+    document.getElementById('saveTip').textContent = '已保存 ' + (r.count||0) + ' 项，立即生效';
+    log('保存 #' + cur + ' 成功：' + JSON.stringify(r));
+    load();
+  } catch (e) {
+    document.getElementById('saveTip').textContent = '保存失败';
+    log('保存失败：' + e.message);
+  }
+};
+load();
+</script>
+</body>
+</html>

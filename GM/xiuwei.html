@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>个人修炼 - 小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  a.btnlink { font: inherit; padding: 4px 10px; border: 1px solid #374151; border-radius: 4px;
+    background: #374151; color: #fff; text-decoration: none; white-space: nowrap; }
+  a.btnlink:hover { background: #4b5563; border-color: #4b5563; }
+  main { display: grid; grid-template-columns: 330px 1fr; gap: 12px; padding: 12px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, select, textarea, button { font: inherit; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button.gray { background: #6b7280; border-color: #6b7280; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: left; }
+  tr.sel { background: #dbeafe; }
+  tbody tr { cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .muted { color: #6b7280; font-size: 12px; }
+  .online { color: #16a34a; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 160px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; }
+  #players { max-height: 65vh; overflow: auto; }
+  #xwTable tbody tr { cursor: default; }
+  #xwTable input { width: 76px; }
+  #xwTable td.warn { color: #dc2626; }
+</style>
+</head>
+<body>
+<header>
+  <h1>个人修炼</h1>
+  <a class="btnlink" href="/" target="_blank" rel="noopener">GM 主页 ↗</a>
+  <a class="btnlink" href="/dongfu.html" target="_blank" rel="noopener">洞府建筑 ↗</a>
+  <a class="btnlink" href="/pets.html" target="_blank" rel="noopener">护法培养 ↗</a>
+  <a class="btnlink" href="/accounts.html" target="_blank" rel="noopener">账号管理 ↗</a>
+  <span id="status" class="muted">未连接</span>
+</header>
+<main>
+  <section>
+    <h2>角色 <button class="gray" id="btnRefresh">刷新</button></h2>
+    <div class="row"><input id="filter" placeholder="按名字 / uid 筛选" style="flex:1"></div>
+    <div id="players"><table><thead><tr><th>uid</th><th>名字</th><th>等级</th><th></th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <section>
+      <h2>六座修炼 <span id="xwTip" class="muted">（先在左边选一个角色）</span></h2>
+      <div class="row" id="xwInfo"></div>
+      <div style="max-height:55vh;overflow:auto">
+        <table id="xwTable"><thead><tr><th>修炼</th><th>当前等级</th><th>累计 / 本级经验</th><th>生效等级</th><th>洞府上限</th><th>设为等级</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="row">
+        <button id="btnSaveAll" disabled>全部保存</button>
+        <span class="muted">设为等级 0–25（本级经验清零）；生效等级 = min(修炼等级, 洞府建筑等级, 人物等级上限)，超出部分不生效。改动立即写盘，不踢下线。</span>
+      </div>
+    </section>
+    <section><h2>日志</h2><div id="log"></div></section>
+  </div>
+</main>
+<script>
+let players = [], xw = null, sel = null;
+
+const $ = id => document.getElementById(id);
+function log(msg, bad) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${bad ? "✗ " : ""}${msg}\n` + $("log").textContent;
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((j && j.error) || ("HTTP " + r.status));
+  return j;
+}
+// 修炼等级 -> 累计经验（与服务端 xiuweiNeed 一致：20 级起每级 ×20）
+function need(lv) { return lv >= 20 ? (lv + 1) * 20 : (lv + 1) * 10; }
+function expTotal(lv) { let n = 0; for (let i = 0; i < lv; i++) n += need(i); return n; }
+
+async function loadStatus() {
+  try {
+    const s = await api("/api/status");
+    $("status").textContent = s.connected ? `已连接 ${s.admin}（${s.mode}）` : "未连接";
+    $("status").style.color = s.connected ? "#16a34a" : "#dc2626";
+  } catch (e) { $("status").textContent = "未连接"; }
+}
+async function loadPlayers() {
+  players = await api("/api/players") || [];
+  renderPlayers();
+}
+function renderPlayers() {
+  const tb = $("players").querySelector("tbody");
+  tb.innerHTML = "";
+  const f = $("filter").value.trim().toLowerCase();
+  for (const p of players) {
+    if (f && !String(p.uid).includes(f) && !(p.name || "").toLowerCase().includes(f)) continue;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${p.uid}</td><td></td><td>${p.grade}</td><td class="online">${p.online ? "在线" : ""}</td>`;
+    tr.children[1].textContent = p.name;
+    tr.onclick = () => selectPlayer(p.uid);
+    if (sel === p.uid) tr.classList.add("sel");
+    tb.appendChild(tr);
+  }
+}
+async function selectPlayer(uid) {
+  sel = uid;
+  renderPlayers();
+  xw = await api("/api/xiuwei?uid=" + uid);
+  if (sel !== uid) return;
+  renderXw();
+  log(`已选角色：${uid}`);
+}
+function renderXw() {
+  const tb = $("xwTable").querySelector("tbody");
+  tb.innerHTML = "";
+  $("xwInfo").innerHTML = "";
+  $("btnSaveAll").disabled = true;
+  if (!xw) {
+    $("xwTip").textContent = "（先在左边选一个角色）";
+    return;
+  }
+  $("xwTip").textContent = "";
+  $("xwInfo").append(`角色 ${xw.uid}　人物等级：${xw.grade}　人物等级修炼上限：${xw.limit}`);
+  for (const r of xw.list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td></td><td>${r.lv}</td><td>${r.curr_exp} / ${r.exp}</td><td>${r.effect_lv}</td><td>${r.cap}</td><td><input type="number" min="0" max="25" value="${r.lv}"></td><td><button>保存</button></td>`;
+    tr.children[0].textContent = r.name;
+    if (r.effect_lv < r.lv) tr.children[3].classList.add("warn");
+    const inp = tr.querySelector("input");
+    tr.querySelector("button").onclick = () => saveOne(r, inp);
+    tb.appendChild(tr);
+  }
+  $("btnSaveAll").disabled = false;
+}
+function collectChanges() {
+  const set = {};
+  const trs = $("xwTable").querySelector("tbody").children;
+  for (let i = 0; i < xw.list.length; i++) {
+    const r = xw.list[i];
+    const v = Number(trs[i].querySelector("input").value);
+    if (!Number.isInteger(v) || v < 0 || v > 25) throw new Error(`${r.name} 的等级须为 0-25 的整数`);
+    if (v !== r.lv) set[r.type] = expTotal(v);
+  }
+  return set;
+}
+async function save(one) {
+  if (!xw) return log("先选一个角色", true);
+  try {
+    const set = one || collectChanges();
+    if (!Object.keys(set).length) return log("没有改动");
+    xw = await api("/api/xiuwei_set", {uid: xw.uid, set});
+    renderXw();
+    log(`已保存（累计经验）：${JSON.stringify(set)}`);
+  } catch (e) { log(e.message, true); }
+}
+async function saveOne(r, inp) {
+  const v = Number(inp.value);
+  if (!Number.isInteger(v) || v < 0 || v > 25) return log(`${r.name} 的等级须为 0-25 的整数`, true);
+  await save({[r.type]: expTotal(v)});
+}
+$("btnRefresh").onclick = () => loadPlayers().catch(e => log(e.message, true));
+$("btnSaveAll").onclick = () => save();
+$("filter").oninput = renderPlayers;
+loadStatus();
+loadPlayers().catch(e => log(e.message, true));
+</script>
+</body>
+</html>

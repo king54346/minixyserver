@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>物品栏 - 小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  a.btnlink { font: inherit; padding: 4px 10px; border: 1px solid #374151; border-radius: 4px;
+    background: #374151; color: #fff; text-decoration: none; white-space: nowrap; }
+  a.btnlink:hover { background: #4b5563; border-color: #4b5563; }
+  main { display: grid; grid-template-columns: 300px 1fr; gap: 12px; padding: 12px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, select, textarea, button { font: inherit; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button.gray { background: #6b7280; border-color: #6b7280; }
+  button.red { background: #dc2626; border-color: #dc2626; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: left; }
+  tr.sel { background: #dbeafe; }
+  tbody tr { cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .muted { color: #6b7280; font-size: 12px; }
+  .online { color: #16a34a; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 140px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; }
+  #players { max-height: 70vh; overflow: auto; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  .grid3 > div { max-height: 46vh; overflow: auto; }
+  .grid3 h3 { font-size: 14px; margin: 0 0 6px; }
+  .delrow { white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>物品栏</h1>
+  <a class="btnlink" href="/" target="_blank" rel="noopener">GM 主页 ↗</a>
+  <a class="btnlink" href="/pets.html" target="_blank" rel="noopener">护法培养 ↗</a>
+  <a class="btnlink" href="/xiuwei.html" target="_blank" rel="noopener">修炼 ↗</a>
+  <a class="btnlink" href="/progress.html" target="_blank" rel="noopener">关卡进度 ↗</a>
+  <span id="status" class="muted">未连接</span>
+</header>
+<main>
+  <section>
+    <h2>角色 <button class="gray" id="btnRefresh">刷新</button></h2>
+    <div class="row"><input id="filter" placeholder="按名字 / uid 筛选" style="flex:1"></div>
+    <div id="players"><table><thead><tr><th>uid</th><th>名字</th><th>等级</th><th></th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <section>
+      <h2>添加物品 <span id="bagTip" class="muted">（先在左边选一个角色）</span></h2>
+      <div class="row">
+        <select id="kind">
+          <option value="item">道具</option>
+          <option value="suit">装备</option>
+          <option value="book">法术书</option>
+        </select>
+        <input id="kw" placeholder="搜索名字 / 编号" style="flex:1;min-width:140px">
+        <select id="obj" style="max-width:340px"></select>
+        <input id="num" type="number" min="1" max="30000" value="1" style="width:90px" title="数量（仅道具）">
+        <button id="btnAdd" disabled>添加</button>
+      </div>
+      <div class="muted">装备 / 法术书添加为 1 级；道具按数量堆叠。增删都会把角色踢下线，重新登录后背包才刷新。</div>
+    </section>
+    <section>
+      <h2>装备套装 <span class="muted">（勾选 4★ / 5★ 装备 → 一键赋予全部套装效果；3★ 及以下不可设置；同一护法的武器 / 衣服 / 鞋两件相同即激活套装）</span></h2>
+      <div class="row">
+        <span>已选 <b id="selCount">0</b> 件</span>
+        <button id="btnSuitApply" disabled>一键赋予全部效果</button>
+        <span class="muted">4★ 装备获得 20 种（不含闪避 / 突袭），5★ 获得全部 22 种；保存会踢下线</span>
+      </div>
+    </section>
+    <section>
+      <div class="grid3">
+        <div>
+          <h3>道具 <span id="cntItem" class="muted"></span></h3>
+          <table id="tblItem"><thead><tr><th>格数</th><th>名字</th><th>数量</th><th></th></tr></thead><tbody></tbody></table>
+        </div>
+        <div>
+          <h3>装备 <span id="cntSuit" class="muted"></span></h3>
+          <table id="tblSuit"><thead><tr><th style="width:22px"><input type="checkbox" id="chkAll" title="全选（仅 4★ 及以上）"></th><th>编号</th><th>名字</th><th>星级</th><th>等级</th><th>炼神</th><th></th></tr></thead><tbody></tbody></table>
+        </div>
+        <div>
+          <h3>法术书 <span id="cntBook" class="muted"></span></h3>
+          <table id="tblBook"><thead><tr><th>格位</th><th>名字</th><th>等级</th><th></th></tr></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </section>
+    <section><h2>日志</h2><div id="log"></div></section>
+  </div>
+</main>
+<script>
+let players = [], bag = null, sel = null, catalog = [];
+
+const $ = id => document.getElementById(id);
+function log(msg, bad) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${bad ? "✗ " : ""}${msg}\n` + $("log").textContent;
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((j && j.error) || ("HTTP " + r.status));
+  return j;
+}
+async function loadStatus() {
+  try {
+    const s = await api("/api/status");
+    $("status").textContent = s.connected ? `已连接 ${s.admin}（${s.mode}）` : "未连接";
+    $("status").style.color = s.connected ? "#16a34a" : "#dc2626";
+  } catch (e) { $("status").textContent = "未连接"; }
+}
+async function loadPlayers() {
+  players = await api("/api/players") || [];
+  renderPlayers();
+}
+function renderPlayers() {
+  const tb = $("players").querySelector("tbody");
+  tb.innerHTML = "";
+  const f = $("filter").value.trim().toLowerCase();
+  for (const p of players) {
+    if (f && !String(p.uid).includes(f) && !(p.name || "").toLowerCase().includes(f)) continue;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${p.uid}</td><td></td><td>${p.grade}</td><td class="online">${p.online ? "在线" : ""}</td>`;
+    tr.children[1].textContent = p.name;
+    tr.onclick = () => selectPlayer(p.uid);
+    if (sel === p.uid) tr.classList.add("sel");
+    tb.appendChild(tr);
+  }
+}
+async function selectPlayer(uid) {
+  sel = uid;
+  renderPlayers();
+  bag = await api("/api/bag?uid=" + uid);
+  if (sel !== uid) return;
+  renderBag();
+  log(`已选角色：${uid}`);
+}
+function renderBag() {
+  // 道具按物品号聚合：一行 = 一个物品，删除 = 删掉它的全部格子
+  const groups = new Map();
+  for (const it of (bag ? bag.items : [])) {
+    const g = groups.get(it.type) || {type: it.type, name: it.name, amount: 0, cells: 0};
+    g.amount += it.amount;
+    g.cells++;
+    groups.set(it.type, g);
+  }
+  const tbItem = $("tblItem").querySelector("tbody");
+  tbItem.innerHTML = "";
+  $("cntItem").textContent = groups.size + " 种 / " + (bag ? bag.items.length : 0) + " 格";
+  for (const g of groups.values()) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${g.cells} 格</td><td></td><td>${g.amount}</td><td class="delrow"><button class="red">全删</button></td>`;
+    tr.children[1].textContent = g.name;
+    tr.querySelector("button").onclick = () => delAll(g);
+    tbItem.appendChild(tr);
+  }
+  const tbSuit = $("tblSuit").querySelector("tbody");
+  tbSuit.innerHTML = "";
+  $("cntSuit").textContent = (bag ? bag.suits.length : 0) + " 个";
+  for (const r of (bag ? bag.suits : [])) {
+    const canSet = r.star >= 4;
+    const skillTxt = r.skill_name ? r.skill_name + (r.saved ? " +" + r.saved : "") : "—";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${canSet ? `<input type="checkbox" class="chk" value="${r.itemnum}">` : "—"}</td><td>${r.itemnum}</td><td></td><td>★${r.star}</td><td>${r.grade}</td><td>${skillTxt}</td><td class="delrow"><button class="red">删</button></td>`;
+    tr.children[2].textContent = r.name + (r.grade > 1 ? "（+" + (r.grade - 1) + "）" : "");
+    if (canSet) tr.querySelector(".chk").onchange = updateSel;
+    tr.querySelector("button").onclick = () => del("suit", r.itemnum, r.name);
+    tbSuit.appendChild(tr);
+  }
+  const tbBook = $("tblBook").querySelector("tbody");
+  tbBook.innerHTML = "";
+  $("cntBook").textContent = (bag ? bag.books.length : 0) + " 个";
+  for (const r of (bag ? bag.books : [])) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.pos}</td><td></td><td>${r.grade}</td><td class="delrow"><button class="red">删</button></td>`;
+    tr.children[1].textContent = r.name;
+    tr.querySelector("button").onclick = () => del("book", r.pos, r.name);
+    tbBook.appendChild(tr);
+  }
+  $("chkAll").checked = false;
+  updateSel();
+  $("btnAdd").disabled = !bag;
+  $("bagTip").textContent = bag ? "" : "（先在左边选一个角色）";
+}
+function renderObj() {
+  const kind = $("kind").value;
+  const kindName = kind === "item" ? "道具" : kind === "suit" ? "装备" : "法术书";
+  const kw = $("kw").value.trim().toLowerCase();
+  const list = catalog.filter(x => x.kind === kindName && (!kw || x.name.toLowerCase().includes(kw) || x.code.toLowerCase().includes(kw)));
+  const sl = $("obj");
+  sl.innerHTML = "";
+  for (const x of list.slice(0, 800)) {
+    const o = document.createElement("option");
+    o.value = x.code.slice(2) + "|" + x.name;
+    o.textContent = `${x.name}（${x.code}）`;
+    sl.appendChild(o);
+  }
+  $("num").style.display = kind === "item" ? "" : "none";
+  $("obj").title = list.length > 800 ? `匹配 ${list.length} 个，仅显示前 800` : "";
+}
+async function add() {
+  if (!bag) return log("先选一个角色", true);
+  const kind = $("kind").value;
+  const v = $("obj").value;
+  if (!v) return log("先选要添加的物品", true);
+  const [idStr, name] = v.split("|");
+  const n = Number($("num").value) || 1;
+  try {
+    bag = await api("/api/bag_add", {uid: bag.uid, kind, id: Number(idStr), n});
+    renderBag();
+    log(`已添加 ${name}${kind === "item" ? " ×" + n : ""}（角色已踢下线，重登可见）`);
+  } catch (e) { log(e.message, true); }
+}
+async function del(kind, key, name) {
+  if (!bag) return;
+  if (!confirm(`确定删除「${name}」？`)) return;
+  try {
+    bag = await api("/api/bag_del", {uid: bag.uid, kind, key});
+    renderBag();
+    log(`已删除 ${name}（角色已踢下线，重登可见）`);
+  } catch (e) { log(e.message, true); }
+}
+async function delAll(g) {
+  if (!bag) return;
+  if (!confirm(`确定删除「${g.name}」全部 ${g.amount} 个（${g.cells} 格）？`)) return;
+  try {
+    bag = await api("/api/bag_del", {uid: bag.uid, kind: "item", type: g.type});
+    renderBag();
+    log(`已删除 ${g.name}：${g.cells} 格（角色已踢下线，重登可见）`);
+  } catch (e) { log(e.message, true); }
+}
+function selectedNums() {
+  return [...document.querySelectorAll("#tblSuit .chk:checked")].map(x => Number(x.value));
+}
+function updateSel() {
+  const n = selectedNums().length;
+  $("selCount").textContent = n;
+  $("btnSuitApply").disabled = !bag || n === 0;
+}
+async function giveAll() {
+  if (!bag) return;
+  const nums = selectedNums();
+  if (!nums.length) return log("先勾选装备", true);
+  if (!confirm(`给选中的 ${nums.length} 件装备赋予全部可用套装效果？`)) return;
+  try {
+    bag = await api("/api/bag_suit", {uid: bag.uid, itemnums: nums});
+    renderBag();
+    log(`${nums.length} 件装备已获得全部套装效果（角色已踢下线，重登可见）`);
+  } catch (e) { log(e.message, true); }
+}
+$("btnRefresh").onclick = () => loadPlayers().catch(e => log(e.message, true));
+$("filter").oninput = renderPlayers;
+$("kind").onchange = renderObj;
+$("kw").oninput = renderObj;
+$("btnAdd").onclick = add;
+$("chkAll").onchange = () => {
+  for (const c of document.querySelectorAll("#tblSuit .chk")) c.checked = $("chkAll").checked;
+  updateSel();
+};
+$("btnSuitApply").onclick = giveAll;
+loadStatus();
+Promise.all([loadPlayers(), api("/api/catalog").then(c => { catalog = c || []; renderObj(); })]).catch(e => log(e.message, true));
+</script>
+</body>
+</html>

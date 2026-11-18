@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>洞府建筑 - 小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  a.btnlink { font: inherit; padding: 4px 10px; border: 1px solid #374151; border-radius: 4px;
+    background: #374151; color: #fff; text-decoration: none; white-space: nowrap; }
+  a.btnlink:hover { background: #4b5563; border-color: #4b5563; }
+  main { display: grid; grid-template-columns: 330px 1fr; gap: 12px; padding: 12px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, select, textarea, button { font: inherit; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button.gray { background: #6b7280; border-color: #6b7280; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: left; }
+  tr.sel { background: #dbeafe; }
+  tbody tr { cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .muted { color: #6b7280; font-size: 12px; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 160px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; }
+  #dongfus { max-height: 65vh; overflow: auto; }
+  #dfTable tbody tr { cursor: default; }
+  #dfTable input, #dfLv { width: 76px; }
+  #dfTable tr.sys td:first-child { color: #6b7280; }
+</style>
+</head>
+<body>
+<header>
+  <h1>洞府建筑</h1>
+  <a class="btnlink" href="/" target="_blank" rel="noopener">GM 主页 ↗</a>
+  <a class="btnlink" href="/pets.html" target="_blank" rel="noopener">护法培养 ↗</a>
+  <a class="btnlink" href="/accounts.html" target="_blank" rel="noopener">账号管理 ↗</a>
+  <span id="status" class="muted">未连接</span>
+</header>
+<main>
+  <section>
+    <h2>洞府列表 <button class="gray" id="btnRefresh">刷新</button></h2>
+    <div id="dongfus"><table><thead><tr><th>ID</th><th>名称</th><th>等级</th><th>成员</th></tr></thead><tbody></tbody></table></div>
+    <div class="muted">共 <span id="dfCount">0</span> 个洞府，点一行查看并修改。</div>
+  </section>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <section>
+      <h2>洞府建筑 <span id="dfTip" class="muted">（先在左边选一个洞府）</span></h2>
+      <div class="row" id="dfInfo"></div>
+      <div class="row">
+        洞府等级：<input id="dfLv" type="number" min="1" max="5" disabled>
+        <button id="btnSaveLv" disabled>保存等级</button>
+        <span class="muted">上限 5 级；建筑上限 = 洞府等级 × 5（满级 25）</span>
+      </div>
+      <div style="max-height:50vh;overflow:auto">
+        <table id="dfTable"><thead><tr><th>项目</th><th>当前等级</th><th>设为</th><th>上限</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="row">
+        <button id="btnSaveAll" disabled>全部保存</button>
+        <span class="muted">六座修为建筑 0–25；房舍 / 灵池 1–5，且不能超过洞府等级。改动立即写入存档。</span>
+      </div>
+    </section>
+    <section><h2>日志</h2><div id="log"></div></section>
+  </div>
+</main>
+<script>
+let list = [], df = null;
+
+const $ = id => document.getElementById(id);
+function log(msg, bad) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${bad ? "✗ " : ""}${msg}\n` + $("log").textContent;
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error((j && j.error) || ("HTTP " + r.status));
+  return j;
+}
+async function loadStatus() {
+  try {
+    const s = await api("/api/status");
+    $("status").textContent = s.connected ? `已连接 ${s.admin}（${s.mode}）` : "未连接";
+    $("status").style.color = s.connected ? "#16a34a" : "#dc2626";
+  } catch (e) { $("status").textContent = "未连接"; }
+}
+async function loadList() {
+  list = await api("/api/dongfus") || [];
+  renderList();
+  if (df) {
+    df = list.find(x => x.id === df.id) || null;
+    renderDongfu();
+  }
+}
+function renderList() {
+  const tb = $("dongfus").querySelector("tbody");
+  tb.innerHTML = "";
+  $("dfCount").textContent = list.length;
+  for (const d of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${d.id}</td><td></td><td>Lv${d.lv}</td><td>${d.members}</td>`;
+    tr.children[1].textContent = d.name;
+    tr.onclick = () => selectDongfu(d.id);
+    if (df && df.id === d.id) tr.classList.add("sel");
+    tb.appendChild(tr);
+  }
+}
+function rows() {
+  if (!df) return [];
+  return [
+    ...df.builds.map(b => ({type: b.type, name: b.name, lv: b.lv, max: 25})),
+    {type: "house", name: "房舍", lv: df.house_lv, max: 5, sys: true},
+    {type: "pool", name: "灵池", lv: df.pool_lv, max: 5, sys: true},
+  ];
+}
+function selectDongfu(id) {
+  df = list.find(x => x.id === id) || null;
+  renderList();
+  renderDongfu();
+  if (df) log(`已选洞府：${df.name}（ID ${df.id}）`);
+}
+function renderDongfu() {
+  const tb = $("dfTable").querySelector("tbody");
+  tb.innerHTML = "";
+  $("dfInfo").innerHTML = "";
+  $("btnSaveAll").disabled = true;
+  $("btnSaveLv").disabled = true;
+  $("dfLv").value = "";
+  $("dfLv").disabled = true;
+  if (!df) {
+    $("dfTip").textContent = "（先在左边选一个洞府）";
+    return;
+  }
+  $("dfTip").textContent = "";
+  const name = document.createElement("b");
+  name.textContent = df.name;
+  $("dfInfo").append("洞府：", name,
+    `（ID ${df.id}）　成员：${df.members}　建筑上限：${df.cap}`);
+  $("dfLv").value = df.lv;
+  $("dfLv").disabled = false;
+  $("btnSaveLv").disabled = false;
+  for (const r of rows()) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td></td><td>${r.lv}</td><td><input type="number" min="0" max="${r.max}" value="${r.lv}"></td><td>${r.max}</td><td><button>保存</button></td>`;
+    tr.children[0].textContent = r.name;
+    if (r.sys) tr.classList.add("sys");
+    const inp = tr.querySelector("input");
+    tr.querySelector("button").onclick = () => saveOne(r, inp);
+    tb.appendChild(tr);
+  }
+  $("btnSaveAll").disabled = false;
+}
+function collectChanges() {
+  const set = {};
+  const rs = rows();
+  const trs = $("dfTable").querySelector("tbody").children;
+  for (let i = 0; i < rs.length; i++) {
+    const r = rs[i];
+    const min = r.sys ? 1 : 0;
+    const v = Number(trs[i].querySelector("input").value);
+    if (!Number.isInteger(v) || v < min || v > r.max) throw new Error(`${r.name} 的等级须为 ${min}-${r.max} 的整数`);
+    if (v !== r.lv) set[r.type] = v;
+  }
+  return set;
+}
+async function save(one) {
+  if (!df) return log("先选一个洞府", true);
+  try {
+    const set = one || collectChanges();
+    if (!Object.keys(set).length) return log("没有改动");
+    df = await api("/api/dongfu_build", {dongfu_id: df.id, set});
+    const i = list.findIndex(x => x.id === df.id);
+    if (i >= 0) list[i] = df;
+    renderList();
+    renderDongfu();
+    log(`洞府「${df.name}」已保存：${JSON.stringify(set)}`);
+  } catch (e) { log(e.message, true); }
+}
+async function saveOne(r, inp) {
+  const min = r.sys ? 1 : 0;
+  const v = Number(inp.value);
+  if (!Number.isInteger(v) || v < min || v > r.max) return log(`${r.name} 的等级须为 ${min}-${r.max} 的整数`, true);
+  await save({[r.type]: v});
+}
+async function saveLv() {
+  if (!df) return log("先选一个洞府", true);
+  const v = Number($("dfLv").value);
+  if (!Number.isInteger(v) || v < 1 || v > 5) return log("洞府等级须为 1-5 的整数", true);
+  try {
+    df = await api("/api/dongfu_lv", {dongfu_id: df.id, lv: v});
+    const i = list.findIndex(x => x.id === df.id);
+    if (i >= 0) list[i] = df;
+    renderList();
+    renderDongfu();
+    log(`洞府「${df.name}」等级已改为 ${df.lv}，建筑上限 ${df.cap}`);
+  } catch (e) { log(e.message, true); }
+}
+$("btnRefresh").onclick = () => loadList().catch(e => log(e.message, true));
+$("btnSaveAll").onclick = () => save();
+$("btnSaveLv").onclick = () => saveLv();
+loadStatus();
+loadList().catch(e => log(e.message, true));
+</script>
+</body>
+</html>

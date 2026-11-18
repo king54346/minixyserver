@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>角色战报</title>
+<style>
+body{font:15px system-ui,sans-serif;background:#f4f6f9;color:#202b3b;margin:24px}
+main{max-width:1100px;margin:auto}section{background:white;border-radius:8px;padding:16px;margin:14px 0}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;border-bottom:1px solid #e4e9ef;padding:7px}
+button,input{font:inherit;margin:4px;padding:5px 9px}pre{overflow:auto;max-height:60vh;background:#eef2f7;padding:12px}
+#status{color:#526477}
+</style>
+</head>
+<body><main>
+<a href="/">返回 GM</a>
+<h1 id="title">角色战报</h1>
+<section>
+<label>日期 <input id="day" type="date"></label><button id="refresh">查询</button>
+<button id="prev" disabled>上一页</button><button id="next" disabled>下一页</button>
+<p id="status" role="status"></p>
+<table><thead><tr><th>时间</th><th>对手</th><th>结果</th><th>战报编号</th><th></th></tr></thead><tbody id="rows"></tbody></table>
+</section>
+<section id="detail" hidden><h2 id="fightTitle"></h2><div id="teams"></div><pre id="timeline"></pre></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const uid = new URLSearchParams(location.search).get("uid");
+const pageSize = 30;
+let offset = 0, listRequest = 0, detailRequest = 0;
+const labels = {3:"出招",4:"扣血",5:"回血",6:"阵亡",7:"复活",8:"状态",9:"回合",10:"换位",11:"开战",12:"结算",13:"战意",14:"攻击变化",17:"移除状态",18:"物理结界",19:"生命上限",20:"蓄力",22:"行动结束",23:"法术结界",26:"变身",36:"补位",40:"获得神通"};
+async function api(kind, query) {
+  const response = await fetch("/api/records/" + kind + "?" + new URLSearchParams(query));
+  const data = await response.json();
+  if (!response.ok || data.error) throw Error(data.error || "HTTP " + response.status);
+  return data;
+}
+function cell(row, value) { row.insertCell().textContent = value ?? "—"; }
+function clock(value) { return value ? value.replace(/^(..)(..)(..)$/, "$1:$2:$3") : "—"; }
+async function load() {
+  const token = ++listRequest;
+  ++detailRequest;
+  $("detail").hidden = true;
+  $("rows").replaceChildren();
+  $("prev").disabled = $("next").disabled = true;
+  if (!/^[1-9]\d*$/.test(uid || "")) {
+    $("status").textContent = "请先在 GM 主页选择角色。";
+    return;
+  }
+  $("title").textContent = "角色 " + uid + " 的战报";
+  $("status").textContent = "正在读取战报…";
+  try {
+    const result = await api("player", {uid, day:$("day").value.replace(/-/g, ""), offset});
+    if (token !== listRequest) return;
+    $("day").value = result.day.replace(/^(....)(..)(..)$/, "$1-$2-$3");
+    for (const item of result.rows) {
+      const row = $("rows").insertRow();
+      cell(row, clock(item.time)); cell(row, item.opponent); cell(row, item.result); cell(row, item.rid);
+      const button = document.createElement("button");
+      button.textContent = "查看"; button.onclick = () => show(item.file);
+      row.insertCell().appendChild(button);
+    }
+    $("status").textContent = result.total ? "共 " + result.total + " 份战报" : "当天没有该角色的存档战报。";
+    $("prev").disabled = offset === 0;
+    $("next").disabled = offset + pageSize >= result.total;
+  } catch (e) {
+    if (token === listRequest) $("status").textContent = "读取失败：" + e.message;
+  }
+}
+async function show(file) {
+  const token = ++detailRequest;
+  $("detail").hidden = false;
+  $("fightTitle").textContent = "正在读取详情…";
+  $("teams").textContent = $("timeline").textContent = "";
+  try {
+    const result = await api("detail", {uid, f:file});
+    if (token !== detailRequest) return;
+    const fight = result.fight;
+    $("fightTitle").textContent = fight.name1 + " 对阵 " + fight.name2 + " · " + fight.rid;
+    for (const side of [1,2]) {
+      const p = document.createElement("p");
+      const pets = (fight["team"+side] || []).map(x => `${x.pos}号 ${x.name || x.icon} · 攻击 ${x.att} · 生命 ${x.hp}`);
+      p.textContent = fight["name"+side] + "（等级 " + fight["level"+side] + "）：" + pets.join(" ｜ ");
+      $("teams").appendChild(p);
+    }
+    let turn = 0;
+    const lines = result.commands.map((c,i) => {
+      if (c.id === 9) return "—— 第 " + (++turn) + " 回合 ——";
+      const targets = (c.targets || []).map(([pos,num]) => c.id === 3 ? pos + "号" : pos + "号 / " + num).join("，");
+      const source = c.actor ? c.actor + "号 → " : "";
+      const name = c.name ? " " + c.name : c.magic ? " #" + c.magic : "";
+      return (i+1) + ". " + source + (labels[c.id] || "指令 " + c.id) + name + (targets ? "  " + targets : "");
+    });
+    if (result.total_commands > lines.length) lines.push("仅展示前 " + lines.length + " 条，共 " + result.total_commands + " 条。");
+    $("timeline").textContent = lines.join("\n");
+  } catch(e) {
+    if (token === detailRequest) $("fightTitle").textContent = "读取失败：" + e.message;
+  }
+}
+$("refresh").onclick = () => { offset = 0; load(); };
+$("day").onchange = $("refresh").onclick;
+$("prev").onclick = () => { offset = Math.max(0, offset - pageSize); load(); };
+$("next").onclick = () => { offset += pageSize; load(); };
+load();
+</script></body></html>

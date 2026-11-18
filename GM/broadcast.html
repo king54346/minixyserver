@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>全服播报 - 小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  a.btnlink { font: inherit; padding: 4px 10px; border: 1px solid #374151; border-radius: 4px;
+    background: #374151; color: #fff; text-decoration: none; white-space: nowrap; }
+  a.btnlink:hover { background: #4b5563; border-color: #4b5563; }
+  main { display: flex; flex-direction: column; gap: 12px; padding: 12px; max-width: 900px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, textarea, button { font: inherit; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  textarea { width: 100%; min-height: 90px; resize: vertical; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.mini { padding: 2px 8px; font-size: 12px; background: #6b7280; border-color: #6b7280; margin-right: 4px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+  .muted { color: #6b7280; font-size: 12px; }
+  .chk { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; cursor: pointer; }
+  .chk.on { background: #eff6ff; border-color: #2563eb; color: #1d4ed8; font-weight: 600; }
+  .chk input { margin: 0; }
+  #preview { background: #111827; color: #e5e7eb; padding: 10px; border-radius: 6px; min-height: 40px; white-space: pre-wrap; }
+  #preview .g { color: #4ade80; }
+  #preview .r { color: #f87171; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 180px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; }
+  #hist td { padding: 4px 6px; border-bottom: 1px solid #eee; font-size: 13px; }
+  #hist { width: 100%; border-collapse: collapse; }
+  .badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; background: #e5e7eb; color: #374151; margin-right: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>全服播报</h1>
+  <a class="btnlink" href="/" target="_blank" rel="noopener">GM 主页 ↗</a>
+  <a class="btnlink" href="/operations.html" target="_blank" rel="noopener">发奖与掉率 ↗</a>
+  <span id="status" class="muted">未连接</span>
+</header>
+<main>
+  <section>
+    <h2>发送通道</h2>
+    <div class="row">
+      <label class="chk on" id="wrapPopup"><input type="checkbox" id="chkPopup" checked> 浮动弹窗（3 秒自动消失）</label>
+      <label class="chk on" id="wrapChat"><input type="checkbox" id="chkChat" checked> 世界频道消息</label>
+    </div>
+    <div class="muted">两个都不勾选无法发送；可只发其一。</div>
+  </section>
+
+  <section>
+    <h2>播报内容</h2>
+    <div class="row">
+      <button class="mini" data-tag="#G">绿字</button>
+      <button class="mini" data-tag="#r">红字</button>
+      <span class="muted">「#G文本」绿色、「#r文本」红色；不支持换行，整条单行显示</span>
+    </div>
+    <textarea id="text" placeholder="输入播报内容，例如：今晚 8 点全服活动开启，请到#G长安城集合"></textarea>
+    <div class="row">
+      <label class="muted"><input type="checkbox" id="autoPrefix" checked> 自动加 [公告] 前缀</label>
+      <label class="muted"><input type="checkbox" id="confirmSend" checked> 发送前确认</label>
+    </div>
+    <div class="row">
+      <button id="btnSend">发送播报</button>
+      <span id="tip" class="muted"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>预览 <span class="muted" id="previewHint"></span></h2>
+    <div id="preview" class="muted">（输入内容后显示预览）</div>
+  </section>
+
+  <section>
+    <h2>最近发送 <button class="mini" id="btnClear">清空</button></h2>
+    <table id="hist"><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>日志</h2>
+    <div id="log"></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const KEY = "xym_gm_broadcast_hist";
+
+function esc(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function rich(s) {
+  // 只处理 #G / #r（客户端 messagebox 支持这两色；#n 换行不支持）
+  let out = "", open = false;
+  const parts = s.split(/(#G|#r)/g);
+  for (const p of parts) {
+    if (p === "#G") { if (open) out += "</span>"; out += '<span class="g">'; open = true; }
+    else if (p === "#r") { if (open) out += "</span>"; out += '<span class="r">'; open = true; }
+    else out += esc(p);
+  }
+  if (open) out += "</span>";
+  return out;
+}
+function fullText() {
+  const body = $("text").value.replace(/\s*\n\s*/g, " ").trim();  // 客户端不支持换行，压成单行
+  return ($("autoPrefix").checked ? "[公告] " : "") + body;
+}
+function renderPreview() {
+  const t = fullText().trim();
+  if (!t) { $("preview").innerHTML = '<span class="muted">（输入内容后显示预览）</span>'; return; }
+  $("preview").innerHTML = rich(t);
+}
+function chans() {
+  return { popup: $("chkPopup").checked, chat: $("chkChat").checked };
+}
+function syncChkStyle() {
+  $("wrapPopup").className = "chk" + ($("chkPopup").checked ? " on" : "");
+  $("wrapChat").className = "chk" + ($("chkChat").checked ? " on" : "");
+}
+function renderHist() {
+  let hist = [];
+  try { hist = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) {}
+  const tb = $("hist").querySelector("tbody");
+  if (!hist.length) { tb.innerHTML = '<tr><td class="muted">暂无记录</td></tr>'; return; }
+  tb.innerHTML = hist.map(x => {
+    const ch = (x.popup ? '<span class="badge">弹窗</span>' : '') + (x.chat ? '<span class="badge">世界</span>' : '');
+    return `<tr><td class="muted" style="white-space:nowrap">${esc(x.time)}</td><td>${ch}</td><td>${rich(esc(x.text))}</td><td class="muted">${x.sent} 人</td></tr>`;
+  }).join("");
+}
+function pushHist(text, sent, c) {
+  let hist = [];
+  try { hist = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) {}
+  const d = new Date();
+  const pad = n => String(n).padStart(2, "0");
+  const time = `${d.getMonth()+1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  hist.unshift({ time, text, sent, popup: c.popup, chat: c.chat });
+  localStorage.setItem(KEY, JSON.stringify(hist.slice(0, 50)));
+  renderHist();
+}
+function log(msg) {
+  const el = $("log");
+  const d = new Date();
+  el.textContent = `[${d.toLocaleTimeString()}] ${msg}\n` + el.textContent;
+}
+
+async function send() {
+  const body = $("text").value.trim();
+  if (!body) { $("tip").textContent = "内容为空"; return; }
+  const c = chans();
+  if (!c.popup && !c.chat) { $("tip").textContent = "请至少选择一个通道"; return; }
+  const text = fullText();
+  if ($("confirmSend").checked) {
+    const chDesc = [c.popup ? "弹窗" : "", c.chat ? "世界频道" : ""].filter(Boolean).join(" + ");
+    if (!confirm(`确认通过【${chDesc}】向全服在线玩家播报？\n\n${text}`)) return;
+  }
+  $("btnSend").disabled = true;
+  $("tip").textContent = "发送中…";
+  try {
+    const r = await fetch("/api/broadcast", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, popup: c.popup, chat: c.chat })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      $("tip").textContent = "失败：" + (j.error || r.status);
+      log("失败：" + JSON.stringify(j));
+      return;
+    }
+    const n = j.sent ?? 0;
+    $("tip").textContent = n > 0 ? `已广播到 ${n} 名在线玩家` : "已发送（当前无人在线）";
+    log(`播报成功：${n} 人 · 弹窗=${c.popup} 世界=${c.chat} · ${text}`);
+    pushHist(text, n, c);
+  } catch (e) {
+    $("tip").textContent = "出错：" + e;
+    log("出错：" + e);
+  } finally {
+    $("btnSend").disabled = false;
+  }
+}
+
+$("btnSend").addEventListener("click", send);
+$("btnClear").addEventListener("click", () => {
+  if (confirm("清空本页发送记录？")) { localStorage.removeItem(KEY); renderHist(); }
+});
+document.querySelectorAll("button[data-tag]").forEach(b => {
+  b.addEventListener("click", () => {
+    const t = $("text");
+    const tag = b.dataset.tag;
+    const s = t.selectionStart ?? t.value.length, e = t.selectionEnd ?? t.value.length;
+    const sel = t.value.slice(s, e);
+    const ins = tag + sel;
+    t.value = t.value.slice(0, s) + ins + t.value.slice(e);
+    t.focus();
+    t.selectionStart = t.selectionEnd = s + ins.length;
+    renderPreview();
+  });
+});
+$("text").addEventListener("input", renderPreview);
+["chkPopup", "chkChat"].forEach(id => {
+  $(id).addEventListener("change", () => { syncChkStyle(); updateHint(); });
+});
+
+function updateHint() {
+  const c = chans();
+  const parts = [];
+  if (c.popup) parts.push("浮动提示 · 3 秒自动消失");
+  if (c.chat) parts.push("世界频道");
+  $("previewHint").textContent = parts.length ? "（" + parts.join(" + ") + "）" : "（未选通道）";
+}
+
+// 状态（复用 /api/status）
+fetch("/api/status").then(r => r.json()).then(j => {
+  $("status").textContent = (j.connected ? "已连接 " : "未连接 ") + (j.mode || "");
+  $("status").className = j.connected ? "online" : "muted";
+}).catch(() => {});
+
+syncChkStyle();
+updateHint();
+renderPreview();
+renderHist();
+</script>
+</body>
+</html>

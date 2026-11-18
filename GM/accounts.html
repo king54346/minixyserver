@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>账号管理 - 小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  a.btnlink { font: inherit; padding: 4px 10px; border: 1px solid #374151; border-radius: 4px;
+    background: #374151; color: #fff; text-decoration: none; white-space: nowrap; }
+  a.btnlink:hover { background: #4b5563; border-color: #4b5563; }
+  main { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, select, textarea, button { font: inherit; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button.gray { background: #6b7280; border-color: #6b7280; }
+  button.red { background: #dc2626; border-color: #dc2626; }
+  button.small { padding: 2px 6px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: left; }
+  tbody tr:hover { background: #f9fafb; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .muted { color: #6b7280; font-size: 12px; }
+  .online { color: #16a34a; }
+  .warn { color: #dc2626; font-size: 13px; font-weight: 600; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 200px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; }
+  #accList { max-height: 60vh; overflow: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>账号管理</h1>
+  <a class="btnlink" href="/" target="_blank" rel="noopener">GM 主页 ↗</a>
+  <a class="btnlink" href="/pets.html" target="_blank" rel="noopener">护法培养 ↗</a>
+  <span id="status" class="muted">未连接</span>
+</header>
+<main>
+  <section>
+    <h2>注册账号</h2>
+    <div class="row">
+      <label>账号 <input id="accUrs" placeholder="1-32 个字符" style="width:160px"></label>
+      <label>密码 <input id="accPwd" type="password" placeholder="1-64 个字符" style="width:160px"></label>
+      <label>安全码（可选） <input id="accCode" placeholder="4-16 位字母或数字" style="width:170px"></label>
+      <button id="btnAccount">注册账号</button>
+      <span id="accTip" class="muted"></span>
+    </div>
+    <div class="muted">新账号 UID 自动分配（从 20001 起）；安全码留空表示不设置。</div>
+  </section>
+
+  <section>
+    <h2>账号列表 <button class="gray" id="btnRefresh">刷新</button></h2>
+    <div class="row"><input id="filter" placeholder="按账号 / uid 筛选" style="flex:1"><span id="accCount" class="muted"></span></div>
+    <div id="accList">
+      <table id="accTable">
+        <thead><tr><th>uid</th><th>账号</th><th>创建时间</th><th>在线</th><th>有角色</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="warn" style="margin-top:10px">⚠ 删除账号会连带删除其角色与存档，不可恢复。</div>
+  </section>
+
+  <section><h2>日志</h2><div id="log"></div></section>
+</main>
+<script>
+let accounts = [];
+
+const $ = id => document.getElementById(id);
+function log(msg, bad) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${bad ? "✗ " : ""}${msg}\n` + $("log").textContent;
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+const fmtTime = s => {
+  if (!s) return "";
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+};
+
+async function loadAccounts() {
+  accounts = await api("/api/accounts") || [];
+  renderAccounts();
+}
+$("btnRefresh").onclick = () => loadAccounts().catch(e => log(e.message, true));
+$("filter").oninput = renderAccounts;
+function renderAccounts() {
+  const f = $("filter").value.trim().toLowerCase();
+  const tb = $("accTable").querySelector("tbody");
+  tb.innerHTML = "";
+  let n = 0;
+  for (const a of accounts) {
+    if (f && !String(a.uid).includes(f) && !(a.urs || "").toLowerCase().includes(f)) continue;
+    n++;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${a.uid}</td><td></td><td>${fmtTime(a.created)}</td>` +
+      `<td class="online">${a.online ? "在线" : ""}</td><td>${a.has_role ? "有" : ""}</td>` +
+      `<td><button class="gray small" data-act="pwd">重置密码</button> ` +
+      `<button class="red small" data-act="del">删除</button></td>`;
+    tr.children[1].textContent = a.urs;
+    tr.querySelector('button[data-act="pwd"]').onclick = () => resetPwd(a);
+    tr.querySelector('button[data-act="del"]').onclick = () => deleteAccount(a);
+    tb.appendChild(tr);
+  }
+  $("accCount").textContent = `显示 ${n} / ${accounts.length}`;
+}
+
+$("btnAccount").onclick = async () => {
+  const urs = $("accUrs").value.trim(), pwd = $("accPwd").value, code = $("accCode").value.trim();
+  if (!urs) return log("填账号", true);
+  if (!pwd) return log("填密码", true);
+  const btn = $("btnAccount");
+  btn.disabled = true;
+  try {
+    const j = await api("/api/account", {urs, pwd, code});
+    $("accTip").textContent = `新账号 ${j.urs}，UID ${j.uid}`;
+    log(`已注册账号 ${j.urs}（UID ${j.uid}${code ? "，含安全码" : ""}）`);
+    $("accUrs").value = ""; $("accPwd").value = ""; $("accCode").value = "";
+    await loadAccounts();
+  } catch (e) {
+    $("accTip").textContent = "";
+    log(`注册账号 ${urs} 失败：${e.message}`, true);
+  } finally { btn.disabled = false; }
+};
+
+async function resetPwd(a) {
+  const pwd = prompt(`给账号 ${a.urs}（uid ${a.uid}）设置新密码（1-64 个字符）：`);
+  if (pwd === null) return;
+  if (!pwd) return log("密码不能为空", true);
+  try {
+    const j = await api("/api/account_pwd", {urs: a.urs, pwd});
+    log(`账号 ${a.urs}（uid ${j.uid}）密码已重置`);
+    await loadAccounts();
+  } catch (e) { log(`重置 ${a.urs} 密码失败：${e.message}`, true); }
+}
+
+async function deleteAccount(a) {
+  // 与服务端一致：confirm 必须与该账号名完全一致
+  const typed = prompt(`删除账号 ${a.urs}（uid ${a.uid}）？\n` +
+    `会连带删除其角色与存档，不可恢复。\n\n请手动输入账号名「${a.urs}」以确认：`);
+  if (typed === null) return;
+  if (typed !== a.urs) return log(`输入的「${typed}」与账号名「${a.urs}」不一致，已取消删除`, true);
+  try {
+    const j = await api("/api/account_delete", {urs: a.urs, confirm: typed});
+    log(`已删除账号 ${a.urs}（uid ${j.uid}）及其角色与存档`);
+    await loadAccounts();
+  } catch (e) { log(`删除 ${a.urs} 失败：${e.message}`, true); }
+}
+
+api("/api/status").then(j => {
+  $("status").textContent = j.connected ? "已连接 " + (j.mode === "direct" ? j.admin : j.host) : "未连接";
+  if (j.connected) loadAccounts().catch(e => log(e.message, true));
+}).catch(() => {});
+</script>
+</body>
+</html>

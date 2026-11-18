@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>护法培养 - 小妖怪 GM 工具</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 "Microsoft YaHei", sans-serif; background: #f3f4f6; color: #1f2937; }
+  header { background: #1f2937; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  a.btnlink { font: inherit; padding: 4px 10px; border: 1px solid #374151; border-radius: 4px;
+    background: #374151; color: #fff; text-decoration: none; white-space: nowrap; }
+  a.btnlink:hover { background: #4b5563; border-color: #4b5563; }
+  main { display: grid; grid-template-columns: 330px 1fr; gap: 12px; padding: 12px; }
+  section { background: #fff; border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  input, select, textarea, button { font: inherit; padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 4px; }
+  button { background: #2563eb; color: #fff; border-color: #2563eb; cursor: pointer; }
+  button.gray { background: #6b7280; border-color: #6b7280; }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid #eee; text-align: left; }
+  tr.sel { background: #dbeafe; }
+  tbody tr { cursor: pointer; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+  .muted { color: #6b7280; font-size: 12px; }
+  .online { color: #16a34a; }
+  #log { white-space: pre-wrap; font-size: 12px; max-height: 160px; overflow: auto; background: #111827; color: #d1d5db; padding: 8px; border-radius: 6px; }
+  #players { max-height: 65vh; overflow: auto; }
+  #petTable tbody tr { cursor: default; }
+</style>
+</head>
+<body>
+<header>
+  <h1>护法培养</h1>
+  <a class="btnlink" href="/" target="_blank" rel="noopener">GM 主页 ↗</a>
+  <a class="btnlink" href="/accounts.html" target="_blank" rel="noopener">账号管理 ↗</a>
+  <span id="status" class="muted">未连接</span>
+</header>
+<main>
+  <section>
+    <h2>玩家 <button class="gray" id="btnRefresh">刷新</button></h2>
+    <div class="row"><input id="filter" placeholder="按名字 / uid 筛选" style="flex:1"></div>
+    <div id="players"><table><thead><tr><th>uid</th><th>名字</th><th>等级</th><th></th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <section>
+      <h2>护法 <span id="petTip" class="muted">（先在左边选一个玩家）</span>
+        <button class="gray" id="btnPetsRefresh" style="float:right">刷新护法</button></h2>
+      <div class="row">
+        <input id="petFilter" placeholder="按名字 / npcnum 筛选" style="flex:1">
+        <span id="petCount" class="muted"></span>
+      </div>
+      <div class="row">
+        <span>已选 <b id="petSelCount">0</b> 个 5★ 护法</span>
+        <button id="btnRelateAll" disabled>一键开满结缘 + 同修</button>
+        <span class="muted">仅 5★ 护法可勾选（助人海星没有人物缘，除外）；结缘 = 全部人物缘（初始 + 可结缘），同修 = 其中可同修的；保存会踢下线</span>
+      </div>
+      <div style="max-height:55vh;overflow:auto">
+        <table id="petTable"><thead><tr><th style="width:22px"><input type="checkbox" id="chkAllPets" title="全选（仅 5★，助人海星除外）"></th><th>npcnum</th><th>名字</th><th>星级</th><th>等级</th><th>结缘</th><th>同修</th>
+          <th>攻击力加值</th><th>生命值加值</th><th>锁定</th><th></th></tr></thead><tbody></tbody></table>
+      </div>
+      <div class="muted">攻击力加值 = 战力丹次数（每点 +1 攻击），生命值加值 = 气血丹次数（每点 +4 生命）。
+        保存会先把该角色踢下线，需重进游戏。</div>
+    </section>
+    <section><h2>日志</h2><div id="log"></div></section>
+  </div>
+</main>
+<script>
+let players = [], pets = [], sel = null;
+
+const $ = id => document.getElementById(id);
+function log(msg, bad) {
+  const t = new Date().toLocaleTimeString();
+  $("log").textContent = `[${t}] ${bad ? "✗ " : ""}${msg}\n` + $("log").textContent;
+}
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok || j.error) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+
+async function loadPlayers() {
+  players = await api("/api/players") || [];
+  renderPlayers();
+}
+$("btnRefresh").onclick = () => loadPlayers().catch(e => log(e.message, true));
+$("filter").oninput = renderPlayers;
+function renderPlayers() {
+  const f = $("filter").value.trim();
+  const tb = $("players").querySelector("tbody");
+  tb.innerHTML = "";
+  for (const p of players) {
+    if (f && !String(p.uid).includes(f) && !(p.name || "").includes(f)) continue;
+    const tr = document.createElement("tr");
+    if (sel === p.uid) tr.className = "sel";
+    tr.innerHTML = `<td>${p.uid}</td><td></td><td>${p.grade}</td><td class="online">${p.online ? "在线" : ""}</td>`;
+    tr.children[1].textContent = p.name;
+    tr.onclick = () => selectPlayer(p.uid);
+    tb.appendChild(tr);
+  }
+}
+
+async function selectPlayer(uid) {
+  sel = uid;
+  renderPlayers();
+  await loadPets();
+}
+
+// ---- 护法培养 ----
+async function loadPets() {
+  if (!sel) return;
+  const uid = sel;
+  pets = await api("/api/pets?uid=" + uid) || [];
+  if (sel !== uid) return; // 期间又选了别的玩家
+  $("petTip").textContent = `（uid ${uid} 共 ${pets.length} 个护法）`;
+  renderPets();
+}
+$("btnPetsRefresh").onclick = () => { if (!sel) return log("先选一个玩家", true); loadPets().catch(e => log(e.message, true)); };
+$("petFilter").oninput = renderPets;
+$("chkAllPets").onchange = () => {
+  for (const c of document.querySelectorAll("#petTable .chk")) c.checked = $("chkAllPets").checked;
+  updatePetSel();
+};
+$("btnRelateAll").onclick = relateAll;
+function petSelected() {
+  return [...document.querySelectorAll("#petTable .chk:checked")].map(x => Number(x.value));
+}
+function updatePetSel() {
+  const n = petSelected().length;
+  $("petSelCount").textContent = n;
+  $("btnRelateAll").disabled = !sel || n === 0;
+}
+async function relateAll() {
+  if (!sel) return log("先选一个玩家", true);
+  const nums = petSelected();
+  if (!nums.length) return log("先勾选 5★ 护法", true);
+  if (!confirm(`给选中的 ${nums.length} 个 5★ 护法开满结缘 + 同修？`)) return;
+  try {
+    pets = await api("/api/pet_relate", {uid: sel, petnums: nums});
+    renderPets();
+    log(`${nums.length} 个护法已开满结缘 + 同修（角色已踢下线，重进游戏可见）`);
+  } catch (e) { log(e.message, true); }
+}
+function renderPets() {
+  const tb = $("petTable").querySelector("tbody");
+  tb.innerHTML = "";
+  const f = $("petFilter").value.trim().toLowerCase();
+  let n = 0;
+  // 排序：5 星在前，其次 4 星、3 星；同星级按 npcnum 升序
+  const list = [...pets].sort((a, b) => (b.star ?? 0) - (a.star ?? 0) || a.npcnum - b.npcnum);
+  for (const pet of list) {
+    if ((pet.star ?? 0) < 3) continue; // 只显示 3 星及以上（2 星及以下不显示）
+    if (f && !String(pet.npcnum).includes(f) && !(pet.name || "").toLowerCase().includes(f)) continue;
+    n++;
+    const canRelate = pet.star === 5 && pet.name !== "助人海星"; // 仅 5★ 可勾选；助人海星没有人物缘，排除
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${canRelate ? `<input type="checkbox" class="chk" value="${pet.npcnum}">` : "—"}</td>` +
+      `<td>${pet.npcnum}</td><td></td><td>${pet.star}</td><td>${pet.grade}</td>` +
+      `<td>${pet.combine ?? 0}/${pet.extend ?? 0}</td><td>${pet.together ?? 0}</td>` +
+      `<td><input type="number" min="0" max="9999" style="width:90px" data-k="attadd"></td>` +
+      `<td><input type="number" min="0" max="9999" style="width:90px" data-k="hpadd"></td>` +
+      `<td>${pet.locked ? "已锁" : ""}</td><td><button>保存</button></td>`;
+    tr.children[2].textContent = pet.name;
+    if (canRelate) tr.querySelector(".chk").onchange = updatePetSel;
+    const attInp = tr.querySelector('input[data-k="attadd"]'), hpInp = tr.querySelector('input[data-k="hpadd"]');
+    attInp.value = pet.attadd ?? 0;
+    hpInp.value = pet.hpadd ?? 0;
+    tr.querySelector("button").onclick = () => savePetPoint(pet, attInp, hpInp, tr);
+    tb.appendChild(tr);
+  }
+  $("petCount").textContent = `显示 ${n} / ${pets.length}（仅 3 星及以上）`;
+  $("chkAllPets").checked = false;
+  updatePetSel();
+}
+async function savePetPoint(pet, attInp, hpInp, tr) {
+  if (!sel) return log("先选一个玩家", true);
+  const body = {uid: sel, npcnum: pet.npcnum};
+  const a = Number(attInp.value), h = Number(hpInp.value);
+  if (!Number.isInteger(a) || !Number.isInteger(h) || a < 0 || a > 9999 || h < 0 || h > 9999) return log("数值须为 0-9999 的整数", true);
+  if (a !== (pet.attadd ?? 0)) body.attadd = a;
+  if (h !== (pet.hpadd ?? 0)) body.hpadd = h;
+  if (body.attadd === undefined && body.hpadd === undefined) return log(`护法 ${pet.npcnum} 没有改动`);
+  const btn = tr.querySelector("button");
+  btn.disabled = true;
+  try {
+    const row = await api("/api/pet_point", body);
+    log(`护法 ${row.npcnum}（${row.name}）已保存：攻击力加值 ${row.attadd}，生命值加值 ${row.hpadd}。` +
+      `已保存（修改前该角色会被踢下线，需重进游戏）`);
+    await loadPets();
+    loadPlayers();
+  } catch (e) { log(e.message, true); }
+  finally { btn.disabled = false; }
+}
+
+api("/api/status").then(j => {
+  $("status").textContent = j.connected ? "已连接 " + (j.mode === "direct" ? j.admin : j.host) : "未连接";
+  if (j.connected) loadPlayers().catch(e => log(e.message, true));
+}).catch(() => {});
+</script>
+</body>
+</html>
