@@ -55,13 +55,13 @@ type GateInfo struct {
 }
 
 type GateMode struct {
-	Cost   int   // 体力
-	CA     int32 // 阵型 fight_ca
-	Param  int   // 怪物等级参数：属性 = base + add*param/1000
-	Reward int32
-	Limit  int // 每日次数
+	Cost  int // 体力
+	Param int // 怪物等级参数：属性 = base + add*param/1000
+	Limit int // 每日次数
 	// Achieve 是成就挑战（2 星、3 星）的成就号（AchieveInfo）；客户端 gate.lua achieve1 / achieve2（精英 jy_ 前缀）。
 	Achieve [2]int32
+	CA      int32 // 阵型 fight_ca
+	Reward  int32
 }
 
 // AchieveInfo 是一个成就条件（auto/tachieve.lua）：胜利且回合数 < Roundless、阵亡数 < Dieless（0 = 不限）、
@@ -99,40 +99,49 @@ func (g *GateInfo) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	g.Task, g.Name = r.Task, r.Name
-	g.Mode[0] = GateMode{r.Cost, r.CA, r.Param, r.Reward, r.Limit, r.Achieve}
-	g.Mode[1] = GateMode{r.JyCost, r.JyCA, r.JyParam, r.JyReward, r.JyLimit, r.JyAch}
+	g.Mode[0] = GateMode{Cost: r.Cost, CA: r.CA, Param: r.Param, Reward: r.Reward, Limit: r.Limit, Achieve: r.Achieve}
+	g.Mode[1] = GateMode{Cost: r.JyCost, CA: r.JyCA, Param: r.JyParam, Reward: r.JyReward, Limit: r.JyLimit, Achieve: r.JyAch}
 	return nil
 }
 
 // NpcInfo 是一个怪物（auto/fight_npc.lua）。
 type NpcInfo struct {
-	Shape  int32  `json:"shape"`
-	Name   string `json:"name"`
-	Race   int    `json:"race"`
-	HP     int    `json:"hp"`
-	HPAdd  int    `json:"hpadd"`
-	Att    int    `json:"att"`
-	AttAdd int    `json:"attadd"`
-	Speed  int    `json:"speed"`
-	Grade  int    `json:"grade"` // 参与法术伤害上限（见 MagicInfo）
-
+	Name    string  `json:"name"`
 	Talents []int32 `json:"talents"`
-	Magic   int32   `json:"magic"`
+	Race    int     `json:"race"`
+	HP      int     `json:"hp"`
+	HPAdd   int     `json:"hpadd"`
+	Att     int     `json:"att"`
+	AttAdd  int     `json:"attadd"`
+	Speed   int     `json:"speed"`
+	Grade   int     `json:"grade"` // 参与法术伤害上限（见 MagicInfo）
 	MagicLv int     `json:"magic_lv"`
+	Shape   int32   `json:"shape"`
+	Magic   int32   `json:"magic"`
 }
 
 // ItemInfo 是一种道具（auto/item.lua）。kind：0 不能使用，3 多选一（choose 为可选的奖励号），
 // 4 碎片合成；etc 非 0 表示使用后发放该奖励（礼包）。
 type ItemInfo struct {
 	Name    string  `json:"name"`
-	Kind    int     `json:"kind"`
-	Overlap int32   `json:"overlap"` // 每格堆叠上限
-	Value   int     `json:"value"`
-	Etc     int32   `json:"etc"`
 	Choose  []int32 `json:"choose"`
+	Kind    int     `json:"kind"`
+	Value   int     `json:"value"`
 	Quality int     `json:"quality"`
-	Cash    int     `json:"cash"` // 银锭类：使用后得的银两（描述「价值N两银子」）
+	Cash    int     `json:"cash"`    // 银锭类：使用后得的银两（描述「价值N两银子」）
+	Overlap int32   `json:"overlap"` // 每格堆叠上限
+	Etc     int32   `json:"etc"`
 }
+
+// CardFrameInfo is derived from the shipped client auto/card_frame.lua.
+type CardFrameInfo struct {
+	Name    string `json:"name"`
+	LastSec int64  `json:"last_sec"`
+	AttAdd  int32  `json:"att_add"`
+	HPAdd   int32  `json:"hp_add"`
+}
+
+var CardFrames map[int]*CardFrameInfo
 
 // SuitInfo 是一件装备（auto/suit.lua）：武器 / 衣服 / 鞋，加攻击或生命，加成 = add[0] + add[1]*强化等级。
 type SuitInfo struct {
@@ -152,36 +161,36 @@ func (si *SuitInfo) Bonus(grade int) int32 { return int32(si.Add[0] + si.Add[1]*
 type TalentInfo struct {
 	Family     string    `json:"f"`
 	TJParam    []float64 `json:"-"` // 激发参数（talent_mgr.getTianjiangDesc 的 a、b…）
-	FamilyID   int32     `json:"-"` // 族号 = 该族最小的神通号（代码按族号判断，族名只用于显示）；无族名为 0
 	Param      []float64 `json:"p"`
-	Buff       int32     `json:"buff"`
 	BuffRate   int       `json:"buff_rate"`
 	BuffTarget int       `json:"buff_target"`
 	Need       int       `json:"-"` // 升到下一级要的神通点（talent.csv need）
+	FamilyID   int32     `json:"-"` // 族号 = 该族最小的神通号（代码按族号判断，族名只用于显示）；无族名为 0
+	Buff       int32     `json:"buff"`
 }
 
 // MagicInfo 是一个法术（auto/magic.lua）。线性函数存成 [a, b]，值 = a + b*LV。
 type MagicInfo struct {
-	Name     string     `json:"name"`
-	Star     int        `json:"star"`
-	Kind     int        `json:"kind"`   // 1 土 2 水 3 火 4 雷（属性伤害），5 治疗，0 物理
-	Target   int        `json:"target"` // 目标规则，见 magicTargets
-	Hurt     [2]float64 `json:"hurt"`   // 伤害/治疗的千分比
-	Rate     int        `json:"rate"`   // 每次行动的施放概率 %
-	Times    int        `json:"times"`  // 每场次数
-	CondZY   int        `json:"cond_zy"`
-	CostZY   [2]float64 `json:"cost_zy"`
-	SP       [3]int     `json:"sp"` // 特效：类型、基值、每级增长/10
-	Buff     int32      `json:"buff"`
-	BuffRate [2]float64 `json:"buff_rate"`
-	JXCost   int        `json:"jingxiu_cost"` // 精修每次消耗的元素数基数（客户端 getCostNum：⌊次数²×cost/10⌋）
-	JXBuff   int32      `json:"jingxiu_buff"` // 精修效果的 buff（buff.json；0 = 不能精修）
+	Name string `json:"name"`
 	// CondRound：只在这些回合施放（空 = 不限，客户端 cond_round）
 	CondRound []int `json:"cond_round"`
 	// ExtSP：附加特效（ext_sp_type / ext_sp_param / ext_sp_grow，与 SP 同义：类型、基值、每级增长/10）
 	ExtSP [][3]int `json:"ext_sp"`
 	// TargetParam：目标规则 17「本方带某神通的护法」的神通号（客户端 target_param；如烈焰怒吼 20061 乱舞）
-	TargetParam []int32 `json:"target_param"`
+	TargetParam []int32    `json:"target_param"`
+	SP          [3]int     `json:"sp"`   // 特效：类型、基值、每级增长/10
+	Hurt        [2]float64 `json:"hurt"` // 伤害/治疗的千分比
+	CostZY      [2]float64 `json:"cost_zy"`
+	BuffRate    [2]float64 `json:"buff_rate"`
+	Star        int        `json:"star"`
+	Kind        int        `json:"kind"`   // 1 土 2 水 3 火 4 雷（属性伤害），5 治疗，0 物理
+	Target      int        `json:"target"` // 目标规则，见 magicTargets
+	Rate        int        `json:"rate"`   // 每次行动的施放概率 %
+	Times       int        `json:"times"`  // 每场次数
+	CondZY      int        `json:"cond_zy"`
+	JXCost      int        `json:"jingxiu_cost"` // 精修每次消耗的元素数基数（客户端 getCostNum：⌊次数²×cost/10⌋）
+	Buff        int32      `json:"buff"`
+	JXBuff      int32      `json:"jingxiu_buff"` // 精修效果的 buff（buff.json；0 = 不能精修）
 }
 
 // BuffInfo 是一条 buff（auto/buff.lua）。精修 buff 名字带数字的随精修次数升级（buff 号 = jingxiu_buff + 次数 - 1），
@@ -238,6 +247,7 @@ var (
 	// ExtendRelates：护法可结缘的缘分（客户端 pet.lua extend_relate，analysis/tools/export_extend_relate.py 导出）。
 	ExtendRelates map[int32][]int32
 	Magics        map[int32]*MagicInfo
+	ExamQuestions []ExamQuestion // 科举答题题库（exam.csv）
 
 	Items       map[int]*ItemInfo
 	Suits       map[int]*SuitInfo
@@ -254,9 +264,18 @@ var (
 )
 
 const (
-	MaxRoleGrade = 50  // 人物满级（官方 50 级 next_exp = 999999）
-	MaxPetGrade  = 100 // config.lua MAX_PET_GRADE
+	MaxRoleGrade   = 50  // 人物满级（官方 50 级 next_exp = 999999）
+	MaxPetGrade    = 100 // config.lua MAX_PET_GRADE
+	MaxXiuweiGrade = 100
 )
+
+// XiuweiNeed是巅峰每级所需经验，满级不再增长。
+func XiuweiNeed(grade int) int64 {
+	if grade < 0 || grade >= MaxXiuweiGrade {
+		return 0
+	}
+	return 80000
+}
 
 // NewbieTask 是一条主线 / 成长任务（客户端 auto/newbietask_new.lua：名字、奖励表号；完成条件在服务端按名字判定）。
 type NewbieTask struct {
@@ -271,6 +290,27 @@ type NewbieTask struct {
 
 // NewbieTasks 按 id 升序。
 var NewbieTasks []NewbieTask
+
+// LiexiTal 是时空裂隙的一组自选神通（客户端 auto/liexi_tal_conflict.lua）：Members 是该族 1 级起的各级神通号，
+// Conflict 是不能同时装备的族（族号 = 该族最小神通号，含自己）。
+type LiexiTal struct {
+	ID       int32   `json:"id"`
+	Members  []int32 `json:"members"`
+	Conflict []int32 `json:"conflict"`
+	Name     string  `json:"name"`
+}
+
+// LiexiTals 是自选神通池（83 组）。
+var LiexiTals []LiexiTal
+
+// CardTotal 是从 1 级升到 grade 级所需的总经验（不含本级进度）。
+func CardTotal(star, grade int) int32 {
+	var n int32
+	for g := 1; g < grade; g++ {
+		n += CardNeed(star, g)
+	}
+	return n
+}
 
 // CardNeed 是 star 星卡牌从 grade 级升到下一级所需经验（pet_mgr.getUpgradeExp，界面取整显示）；
 // 满级返回 0。
@@ -309,11 +349,13 @@ func MustLoad(name string, v any) {
 }
 
 func init() {
+	MustLoad("card_frame.json", &CardFrames)
 	Pets = loadPetCSV()
 	Magics, Suits = loadMagicCSV(), loadSuitCSV()
 	Talents, TalentSets = loadTalentCSV(), loadTalentSetCSV()
 	LeaderSkills = loadLeaderSkillCSV()
 	Relates, RelateReps = loadRelateCSV(), loadRelateRepCSV()
+	ExamQuestions = loadExamCSV()
 	var maps []struct{ ID, Count int }
 	MustLoad("maps.json", &maps)
 	for _, m := range maps {
@@ -321,6 +363,7 @@ func init() {
 	}
 	MustLoad("static.json", &Static)
 	MustLoad("newbietask.json", &NewbieTasks)
+	MustLoad("liexi_tal.json", &LiexiTals)
 
 	var g struct {
 		Gates      map[int]*GateInfo      `json:"gates"`

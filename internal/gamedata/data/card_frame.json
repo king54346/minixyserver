@@ -1,0 +1,44 @@
+{
+  "1": {
+    "name": "金风玉露",
+    "last_sec": -1,
+    "att_add": 40,
+    "hp_add": 0
+  },
+  "2": {
+    "name": "金玉良缘",
+    "last_sec": -1,
+    "att_add": 0,
+    "hp_add": 160
+  },
+  "3": {
+    "name": "良辰美景",
+    "last_sec": 604800,
+    "att_add": 0,
+    "hp_add": 60
+  },
+  "4": {
+    "name": "画中神魔",
+    "last_sec": 604800,
+    "att_add": 15,
+    "hp_add": 0
+  },
+  "5": {
+    "name": "喜气洋洋",
+    "last_sec": 604800,
+    "att_add": 0,
+    "hp_add": 60
+  },
+  "6": {
+    "name": "豪门贵胄",
+    "last_sec": 2592000,
+    "att_add": 25,
+    "hp_add": 0
+  },
+  "7": {
+    "name": "真金火炼",
+    "last_sec": 2592000,
+    "att_add": 0,
+    "hp_add": 100
+  }
+}

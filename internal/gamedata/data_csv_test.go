@@ -40,4 +40,16 @@ func TestCSVTables(t *testing.T) {
 	if n := len(BooksByStar[1]) + len(BooksByStar[2]) + len(BooksByStar[3]) + len(BooksByStar[4]) + len(BooksByStar[5]); n == 0 {
 		t.Error("no magic books")
 	}
+	var ans0, ans1 int
+	for _, q := range ExamQuestions {
+		switch q.Ans {
+		case 0:
+			ans0++
+		case 1:
+			ans1++
+		}
+	}
+	if len(ExamQuestions) != 800 || ans0 != 400 || ans1 != 400 || ExamQuestions[0].ID != 1 || ExamQuestions[0].Ans != 0 || ExamQuestions[5].Ans != 1 {
+		t.Errorf("exam questions: len=%d ans0=%d ans1=%d first=%+v sixth=%+v", len(ExamQuestions), ans0, ans1, ExamQuestions[0], ExamQuestions[5])
+	}
 }

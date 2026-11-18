@@ -1,0 +1,1856 @@
+{
+ "stations": [
+  {
+   "id": 1,
+   "gates": [
+    {
+     "id": 1,
+     "key": "X",
+     "kind": "spawn",
+     "name": "攻方出生点",
+     "owner": 0
+    },
+    {
+     "id": 2,
+     "key": "G",
+     "kind": "monster",
+     "name": "低级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 3,
+     "key": "C",
+     "kind": "arena",
+     "name": "地界擂A",
+     "owner": -1
+    },
+    {
+     "id": 4,
+     "key": "A",
+     "kind": "arena",
+     "name": "人界擂A",
+     "owner": -1
+    },
+    {
+     "id": 5,
+     "key": "M",
+     "kind": "altar",
+     "name": "攻击祭坛",
+     "owner": 0
+    },
+    {
+     "id": 6,
+     "key": "I",
+     "kind": "monster",
+     "name": "高级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 7,
+     "key": "J",
+     "kind": "monster",
+     "name": "高级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 8,
+     "key": "N",
+     "kind": "altar",
+     "name": "防守祭坛",
+     "owner": 1
+    },
+    {
+     "id": 9,
+     "key": "W",
+     "kind": "boss",
+     "name": "妖王",
+     "owner": -1
+    },
+    {
+     "id": 10,
+     "key": "B",
+     "kind": "arena",
+     "name": "人界擂B",
+     "owner": -1
+    },
+    {
+     "id": 11,
+     "key": "D",
+     "kind": "arena",
+     "name": "地界擂B",
+     "owner": -1
+    },
+    {
+     "id": 12,
+     "key": "F",
+     "kind": "arena",
+     "name": "天界擂B",
+     "owner": -1
+    },
+    {
+     "id": 13,
+     "key": "H",
+     "kind": "monster",
+     "name": "低级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 14,
+     "key": "Y",
+     "kind": "spawn",
+     "name": "防方出生点",
+     "owner": 1
+    },
+    {
+     "id": 15,
+     "key": "Z",
+     "kind": "array",
+     "name": "奇异仙阵",
+     "owner": -1
+    },
+    {
+     "id": 16,
+     "key": "E",
+     "kind": "arena",
+     "name": "天界擂A",
+     "owner": -1
+    }
+   ],
+   "edges": [
+    {
+     "a": 1,
+     "b": 2,
+     "time": 10
+    },
+    {
+     "a": 1,
+     "b": 3,
+     "time": 20
+    },
+    {
+     "a": 1,
+     "b": 4,
+     "time": 16
+    },
+    {
+     "a": 2,
+     "b": 3,
+     "time": 10
+    },
+    {
+     "a": 2,
+     "b": 6,
+     "time": 10
+    },
+    {
+     "a": 3,
+     "b": 4,
+     "time": 12
+    },
+    {
+     "a": 3,
+     "b": 5,
+     "time": 10
+    },
+    {
+     "a": 3,
+     "b": 9,
+     "time": 20
+    },
+    {
+     "a": 3,
+     "b": 16,
+     "time": 14
+    },
+    {
+     "a": 4,
+     "b": 7,
+     "time": 20
+    },
+    {
+     "a": 4,
+     "b": 8,
+     "time": 10
+    },
+    {
+     "a": 5,
+     "b": 9,
+     "time": 8
+    },
+    {
+     "a": 6,
+     "b": 16,
+     "time": 12
+    },
+    {
+     "a": 7,
+     "b": 10,
+     "time": 10
+    },
+    {
+     "a": 8,
+     "b": 9,
+     "time": 10
+    },
+    {
+     "a": 8,
+     "b": 10,
+     "time": 12
+    },
+    {
+     "a": 8,
+     "b": 11,
+     "time": 12
+    },
+    {
+     "a": 9,
+     "b": 15,
+     "time": 10
+    },
+    {
+     "a": 10,
+     "b": 12,
+     "time": 6
+    },
+    {
+     "a": 11,
+     "b": 12,
+     "time": 10
+    },
+    {
+     "a": 11,
+     "b": 13,
+     "time": 20
+    },
+    {
+     "a": 11,
+     "b": 14,
+     "time": 10
+    },
+    {
+     "a": 11,
+     "b": 15,
+     "time": 10
+    },
+    {
+     "a": 12,
+     "b": 14,
+     "time": 20
+    },
+    {
+     "a": 13,
+     "b": 14,
+     "time": 14
+    },
+    {
+     "a": 13,
+     "b": 15,
+     "time": 14
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "gates": [
+    {
+     "id": 1,
+     "key": "X",
+     "kind": "spawn",
+     "name": "攻方出生点",
+     "owner": 0
+    },
+    {
+     "id": 2,
+     "key": "G",
+     "kind": "monster",
+     "name": "低级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 3,
+     "key": "E",
+     "kind": "arena",
+     "name": "天界擂A",
+     "owner": -1
+    },
+    {
+     "id": 4,
+     "key": "M",
+     "kind": "altar",
+     "name": "攻击祭坛",
+     "owner": 0
+    },
+    {
+     "id": 5,
+     "key": "A",
+     "kind": "arena",
+     "name": "人界擂A",
+     "owner": -1
+    },
+    {
+     "id": 6,
+     "key": "C",
+     "kind": "arena",
+     "name": "地界擂A",
+     "owner": -1
+    },
+    {
+     "id": 7,
+     "key": "B",
+     "kind": "arena",
+     "name": "人界擂B",
+     "owner": -1
+    },
+    {
+     "id": 8,
+     "key": "N",
+     "kind": "altar",
+     "name": "防守祭坛",
+     "owner": 1
+    },
+    {
+     "id": 9,
+     "key": "D",
+     "kind": "arena",
+     "name": "地界擂B",
+     "owner": -1
+    },
+    {
+     "id": 10,
+     "key": "Z",
+     "kind": "array",
+     "name": "奇异仙阵",
+     "owner": -1
+    },
+    {
+     "id": 11,
+     "key": "W",
+     "kind": "boss",
+     "name": "妖王",
+     "owner": -1
+    },
+    {
+     "id": 12,
+     "key": "J",
+     "kind": "monster",
+     "name": "高级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 13,
+     "key": "H",
+     "kind": "monster",
+     "name": "低级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 14,
+     "key": "Y",
+     "kind": "spawn",
+     "name": "防方出生点",
+     "owner": 1
+    },
+    {
+     "id": 15,
+     "key": "F",
+     "kind": "arena",
+     "name": "天界擂B",
+     "owner": -1
+    },
+    {
+     "id": 16,
+     "key": "I",
+     "kind": "monster",
+     "name": "高级怪物A",
+     "owner": -1
+    }
+   ],
+   "edges": [
+    {
+     "a": 1,
+     "b": 2,
+     "time": 8
+    },
+    {
+     "a": 1,
+     "b": 4,
+     "time": 14
+    },
+    {
+     "a": 1,
+     "b": 6,
+     "time": 12
+    },
+    {
+     "a": 2,
+     "b": 4,
+     "time": 10
+    },
+    {
+     "a": 3,
+     "b": 6,
+     "time": 10
+    },
+    {
+     "a": 3,
+     "b": 16,
+     "time": 8
+    },
+    {
+     "a": 4,
+     "b": 5,
+     "time": 6
+    },
+    {
+     "a": 4,
+     "b": 6,
+     "time": 12
+    },
+    {
+     "a": 5,
+     "b": 6,
+     "time": 16
+    },
+    {
+     "a": 5,
+     "b": 7,
+     "time": 8
+    },
+    {
+     "a": 6,
+     "b": 10,
+     "time": 10
+    },
+    {
+     "a": 6,
+     "b": 11,
+     "time": 14
+    },
+    {
+     "a": 6,
+     "b": 16,
+     "time": 14
+    },
+    {
+     "a": 7,
+     "b": 8,
+     "time": 8
+    },
+    {
+     "a": 7,
+     "b": 9,
+     "time": 8
+    },
+    {
+     "a": 8,
+     "b": 15,
+     "time": 10
+    },
+    {
+     "a": 9,
+     "b": 10,
+     "time": 6
+    },
+    {
+     "a": 9,
+     "b": 15,
+     "time": 8
+    },
+    {
+     "a": 10,
+     "b": 12,
+     "time": 12
+    },
+    {
+     "a": 10,
+     "b": 13,
+     "time": 14
+    },
+    {
+     "a": 11,
+     "b": 12,
+     "time": 12
+    },
+    {
+     "a": 11,
+     "b": 16,
+     "time": 8
+    },
+    {
+     "a": 12,
+     "b": 13,
+     "time": 6
+    },
+    {
+     "a": 13,
+     "b": 14,
+     "time": 12
+    },
+    {
+     "a": 14,
+     "b": 15,
+     "time": 10
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "gates": [
+    {
+     "id": 1,
+     "key": "X",
+     "kind": "spawn",
+     "name": "攻方出生点",
+     "owner": 0
+    },
+    {
+     "id": 2,
+     "key": "G",
+     "kind": "monster",
+     "name": "低级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 3,
+     "key": "E",
+     "kind": "arena",
+     "name": "天界擂A",
+     "owner": -1
+    },
+    {
+     "id": 4,
+     "key": "M",
+     "kind": "altar",
+     "name": "攻击祭坛",
+     "owner": 0
+    },
+    {
+     "id": 5,
+     "key": "C",
+     "kind": "arena",
+     "name": "地界擂A",
+     "owner": -1
+    },
+    {
+     "id": 6,
+     "key": "A",
+     "kind": "arena",
+     "name": "人界擂A",
+     "owner": -1
+    },
+    {
+     "id": 7,
+     "key": "I",
+     "kind": "monster",
+     "name": "高级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 8,
+     "key": "B",
+     "kind": "arena",
+     "name": "人界擂B",
+     "owner": -1
+    },
+    {
+     "id": 9,
+     "key": "D",
+     "kind": "arena",
+     "name": "地界擂B",
+     "owner": -1
+    },
+    {
+     "id": 10,
+     "key": "N",
+     "kind": "altar",
+     "name": "防守祭坛",
+     "owner": 1
+    },
+    {
+     "id": 11,
+     "key": "F",
+     "kind": "arena",
+     "name": "天界擂B",
+     "owner": -1
+    },
+    {
+     "id": 12,
+     "key": "H",
+     "kind": "monster",
+     "name": "低级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 13,
+     "key": "Y",
+     "kind": "spawn",
+     "name": "防方出生点",
+     "owner": 1
+    },
+    {
+     "id": 14,
+     "key": "Z",
+     "kind": "array",
+     "name": "奇异仙阵",
+     "owner": -1
+    },
+    {
+     "id": 15,
+     "key": "J",
+     "kind": "monster",
+     "name": "高级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 16,
+     "key": "W",
+     "kind": "boss",
+     "name": "妖王",
+     "owner": -1
+    }
+   ],
+   "edges": [
+    {
+     "a": 1,
+     "b": 2,
+     "time": 8
+    },
+    {
+     "a": 1,
+     "b": 3,
+     "time": 10
+    },
+    {
+     "a": 2,
+     "b": 7,
+     "time": 8
+    },
+    {
+     "a": 3,
+     "b": 4,
+     "time": 6
+    },
+    {
+     "a": 3,
+     "b": 5,
+     "time": 12
+    },
+    {
+     "a": 3,
+     "b": 6,
+     "time": 16
+    },
+    {
+     "a": 4,
+     "b": 5,
+     "time": 8
+    },
+    {
+     "a": 5,
+     "b": 6,
+     "time": 10
+    },
+    {
+     "a": 6,
+     "b": 7,
+     "time": 8
+    },
+    {
+     "a": 6,
+     "b": 8,
+     "time": 20
+    },
+    {
+     "a": 6,
+     "b": 9,
+     "time": 30
+    },
+    {
+     "a": 6,
+     "b": 14,
+     "time": 18
+    },
+    {
+     "a": 7,
+     "b": 16,
+     "time": 24
+    },
+    {
+     "a": 8,
+     "b": 9,
+     "time": 8
+    },
+    {
+     "a": 8,
+     "b": 10,
+     "time": 10
+    },
+    {
+     "a": 8,
+     "b": 16,
+     "time": 16
+    },
+    {
+     "a": 9,
+     "b": 11,
+     "time": 10
+    },
+    {
+     "a": 9,
+     "b": 15,
+     "time": 10
+    },
+    {
+     "a": 10,
+     "b": 11,
+     "time": 6
+    },
+    {
+     "a": 10,
+     "b": 16,
+     "time": 12
+    },
+    {
+     "a": 11,
+     "b": 13,
+     "time": 10
+    },
+    {
+     "a": 12,
+     "b": 13,
+     "time": 20
+    },
+    {
+     "a": 12,
+     "b": 15,
+     "time": 12
+    },
+    {
+     "a": 14,
+     "b": 15,
+     "time": 12
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "gates": [
+    {
+     "id": 1,
+     "key": "X",
+     "kind": "spawn",
+     "name": "攻方出生点",
+     "owner": 0
+    },
+    {
+     "id": 2,
+     "key": "G",
+     "kind": "monster",
+     "name": "低级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 3,
+     "key": "E",
+     "kind": "arena",
+     "name": "天界擂A",
+     "owner": -1
+    },
+    {
+     "id": 4,
+     "key": "A",
+     "kind": "arena",
+     "name": "人界擂A",
+     "owner": -1
+    },
+    {
+     "id": 5,
+     "key": "M",
+     "kind": "altar",
+     "name": "攻击祭坛",
+     "owner": 0
+    },
+    {
+     "id": 6,
+     "key": "I",
+     "kind": "monster",
+     "name": "高级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 7,
+     "key": "C",
+     "kind": "arena",
+     "name": "地界擂A",
+     "owner": -1
+    },
+    {
+     "id": 8,
+     "key": "Z",
+     "kind": "array",
+     "name": "奇异仙阵",
+     "owner": -1
+    },
+    {
+     "id": 9,
+     "key": "W",
+     "kind": "boss",
+     "name": "妖王",
+     "owner": -1
+    },
+    {
+     "id": 10,
+     "key": "J",
+     "kind": "monster",
+     "name": "高级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 11,
+     "key": "Y",
+     "kind": "spawn",
+     "name": "防方出生点",
+     "owner": 1
+    },
+    {
+     "id": 12,
+     "key": "F",
+     "kind": "arena",
+     "name": "天界擂B",
+     "owner": -1
+    },
+    {
+     "id": 13,
+     "key": "B",
+     "kind": "arena",
+     "name": "人界擂B",
+     "owner": -1
+    },
+    {
+     "id": 14,
+     "key": "N",
+     "kind": "altar",
+     "name": "防守祭坛",
+     "owner": 1
+    },
+    {
+     "id": 15,
+     "key": "H",
+     "kind": "monster",
+     "name": "低级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 16,
+     "key": "D",
+     "kind": "arena",
+     "name": "地界擂B",
+     "owner": -1
+    }
+   ],
+   "edges": [
+    {
+     "a": 1,
+     "b": 2,
+     "time": 10
+    },
+    {
+     "a": 1,
+     "b": 3,
+     "time": 10
+    },
+    {
+     "a": 2,
+     "b": 3,
+     "time": 14
+    },
+    {
+     "a": 2,
+     "b": 6,
+     "time": 12
+    },
+    {
+     "a": 3,
+     "b": 4,
+     "time": 8
+    },
+    {
+     "a": 3,
+     "b": 7,
+     "time": 8
+    },
+    {
+     "a": 4,
+     "b": 7,
+     "time": 14
+    },
+    {
+     "a": 4,
+     "b": 16,
+     "time": 14
+    },
+    {
+     "a": 5,
+     "b": 7,
+     "time": 6
+    },
+    {
+     "a": 6,
+     "b": 8,
+     "time": 14
+    },
+    {
+     "a": 6,
+     "b": 9,
+     "time": 20
+    },
+    {
+     "a": 7,
+     "b": 13,
+     "time": 20
+    },
+    {
+     "a": 7,
+     "b": 16,
+     "time": 24
+    },
+    {
+     "a": 8,
+     "b": 9,
+     "time": 12
+    },
+    {
+     "a": 8,
+     "b": 10,
+     "time": 14
+    },
+    {
+     "a": 9,
+     "b": 10,
+     "time": 8
+    },
+    {
+     "a": 10,
+     "b": 15,
+     "time": 10
+    },
+    {
+     "a": 10,
+     "b": 16,
+     "time": 10
+    },
+    {
+     "a": 11,
+     "b": 12,
+     "time": 10
+    },
+    {
+     "a": 11,
+     "b": 15,
+     "time": 8
+    },
+    {
+     "a": 11,
+     "b": 16,
+     "time": 12
+    },
+    {
+     "a": 12,
+     "b": 13,
+     "time": 6
+    },
+    {
+     "a": 12,
+     "b": 14,
+     "time": 6
+    },
+    {
+     "a": 12,
+     "b": 16,
+     "time": 10
+    },
+    {
+     "a": 13,
+     "b": 16,
+     "time": 10
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "gates": [
+    {
+     "id": 1,
+     "key": "X",
+     "kind": "spawn",
+     "name": "攻方出生点",
+     "owner": 0
+    },
+    {
+     "id": 2,
+     "key": "E",
+     "kind": "arena",
+     "name": "天界擂A",
+     "owner": -1
+    },
+    {
+     "id": 3,
+     "key": "C",
+     "kind": "arena",
+     "name": "地界擂A",
+     "owner": -1
+    },
+    {
+     "id": 4,
+     "key": "G",
+     "kind": "monster",
+     "name": "低级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 5,
+     "key": "A",
+     "kind": "arena",
+     "name": "人界擂A",
+     "owner": -1
+    },
+    {
+     "id": 6,
+     "key": "I",
+     "kind": "monster",
+     "name": "高级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 7,
+     "key": "N",
+     "kind": "altar",
+     "name": "防守祭坛",
+     "owner": 1
+    },
+    {
+     "id": 8,
+     "key": "W",
+     "kind": "boss",
+     "name": "妖王",
+     "owner": -1
+    },
+    {
+     "id": 9,
+     "key": "J",
+     "kind": "monster",
+     "name": "高级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 10,
+     "key": "D",
+     "kind": "arena",
+     "name": "地界擂B",
+     "owner": -1
+    },
+    {
+     "id": 11,
+     "key": "H",
+     "kind": "monster",
+     "name": "低级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 12,
+     "key": "Y",
+     "kind": "spawn",
+     "name": "防方出生点",
+     "owner": 1
+    },
+    {
+     "id": 13,
+     "key": "F",
+     "kind": "arena",
+     "name": "天界擂B",
+     "owner": -1
+    },
+    {
+     "id": 14,
+     "key": "B",
+     "kind": "arena",
+     "name": "人界擂B",
+     "owner": -1
+    },
+    {
+     "id": 15,
+     "key": "Z",
+     "kind": "array",
+     "name": "奇异仙阵",
+     "owner": -1
+    },
+    {
+     "id": 16,
+     "key": "M",
+     "kind": "altar",
+     "name": "攻击祭坛",
+     "owner": 0
+    }
+   ],
+   "edges": [
+    {
+     "a": 1,
+     "b": 2,
+     "time": 8
+    },
+    {
+     "a": 1,
+     "b": 4,
+     "time": 10
+    },
+    {
+     "a": 2,
+     "b": 3,
+     "time": 10
+    },
+    {
+     "a": 2,
+     "b": 5,
+     "time": 10
+    },
+    {
+     "a": 3,
+     "b": 5,
+     "time": 8
+    },
+    {
+     "a": 4,
+     "b": 6,
+     "time": 8
+    },
+    {
+     "a": 5,
+     "b": 14,
+     "time": 20
+    },
+    {
+     "a": 5,
+     "b": 15,
+     "time": 12
+    },
+    {
+     "a": 5,
+     "b": 16,
+     "time": 6
+    },
+    {
+     "a": 6,
+     "b": 8,
+     "time": 10
+    },
+    {
+     "a": 7,
+     "b": 10,
+     "time": 4
+    },
+    {
+     "a": 8,
+     "b": 9,
+     "time": 6
+    },
+    {
+     "a": 8,
+     "b": 15,
+     "time": 6
+    },
+    {
+     "a": 9,
+     "b": 11,
+     "time": 8
+    },
+    {
+     "a": 10,
+     "b": 13,
+     "time": 8
+    },
+    {
+     "a": 10,
+     "b": 14,
+     "time": 10
+    },
+    {
+     "a": 11,
+     "b": 12,
+     "time": 10
+    },
+    {
+     "a": 11,
+     "b": 14,
+     "time": 12
+    },
+    {
+     "a": 12,
+     "b": 13,
+     "time": 4
+    },
+    {
+     "a": 13,
+     "b": 14,
+     "time": 12
+    },
+    {
+     "a": 14,
+     "b": 15,
+     "time": 12
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "gates": [
+    {
+     "id": 1,
+     "key": "X",
+     "kind": "spawn",
+     "name": "攻方出生点",
+     "owner": 0
+    },
+    {
+     "id": 2,
+     "key": "G",
+     "kind": "monster",
+     "name": "低级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 3,
+     "key": "M",
+     "kind": "altar",
+     "name": "攻击祭坛",
+     "owner": 0
+    },
+    {
+     "id": 4,
+     "key": "I",
+     "kind": "monster",
+     "name": "高级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 5,
+     "key": "W",
+     "kind": "boss",
+     "name": "妖王",
+     "owner": -1
+    },
+    {
+     "id": 6,
+     "key": "A",
+     "kind": "arena",
+     "name": "人界擂A",
+     "owner": -1
+    },
+    {
+     "id": 7,
+     "key": "C",
+     "kind": "arena",
+     "name": "地界擂A",
+     "owner": -1
+    },
+    {
+     "id": 8,
+     "key": "E",
+     "kind": "arena",
+     "name": "天界擂A",
+     "owner": -1
+    },
+    {
+     "id": 9,
+     "key": "B",
+     "kind": "arena",
+     "name": "人界擂B",
+     "owner": -1
+    },
+    {
+     "id": 10,
+     "key": "H",
+     "kind": "monster",
+     "name": "低级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 11,
+     "key": "F",
+     "kind": "arena",
+     "name": "天界擂B",
+     "owner": -1
+    },
+    {
+     "id": 12,
+     "key": "Y",
+     "kind": "spawn",
+     "name": "防方出生点",
+     "owner": 1
+    },
+    {
+     "id": 13,
+     "key": "N",
+     "kind": "altar",
+     "name": "防守祭坛",
+     "owner": 1
+    },
+    {
+     "id": 14,
+     "key": "J",
+     "kind": "monster",
+     "name": "高级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 15,
+     "key": "D",
+     "kind": "arena",
+     "name": "地界擂B",
+     "owner": -1
+    },
+    {
+     "id": 16,
+     "key": "Z",
+     "kind": "array",
+     "name": "奇异仙阵",
+     "owner": -1
+    }
+   ],
+   "edges": [
+    {
+     "a": 1,
+     "b": 2,
+     "time": 10
+    },
+    {
+     "a": 1,
+     "b": 8,
+     "time": 8
+    },
+    {
+     "a": 2,
+     "b": 4,
+     "time": 10
+    },
+    {
+     "a": 3,
+     "b": 4,
+     "time": 8
+    },
+    {
+     "a": 4,
+     "b": 5,
+     "time": 12
+    },
+    {
+     "a": 5,
+     "b": 14,
+     "time": 16
+    },
+    {
+     "a": 6,
+     "b": 7,
+     "time": 8
+    },
+    {
+     "a": 6,
+     "b": 8,
+     "time": 20
+    },
+    {
+     "a": 6,
+     "b": 16,
+     "time": 4
+    },
+    {
+     "a": 7,
+     "b": 8,
+     "time": 12
+    },
+    {
+     "a": 7,
+     "b": 9,
+     "time": 16
+    },
+    {
+     "a": 7,
+     "b": 15,
+     "time": 10
+    },
+    {
+     "a": 9,
+     "b": 11,
+     "time": 14
+    },
+    {
+     "a": 9,
+     "b": 15,
+     "time": 16
+    },
+    {
+     "a": 10,
+     "b": 12,
+     "time": 8
+    },
+    {
+     "a": 10,
+     "b": 14,
+     "time": 12
+    },
+    {
+     "a": 11,
+     "b": 12,
+     "time": 8
+    },
+    {
+     "a": 11,
+     "b": 15,
+     "time": 10
+    },
+    {
+     "a": 13,
+     "b": 14,
+     "time": 12
+    },
+    {
+     "a": 15,
+     "b": 16,
+     "time": 6
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "gates": [
+    {
+     "id": 1,
+     "key": "X",
+     "kind": "spawn",
+     "name": "攻方出生点",
+     "owner": 0
+    },
+    {
+     "id": 2,
+     "key": "E",
+     "kind": "arena",
+     "name": "天界擂A",
+     "owner": -1
+    },
+    {
+     "id": 3,
+     "key": "G",
+     "kind": "monster",
+     "name": "低级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 4,
+     "key": "M",
+     "kind": "altar",
+     "name": "攻击祭坛",
+     "owner": 0
+    },
+    {
+     "id": 5,
+     "key": "B",
+     "kind": "arena",
+     "name": "人界擂B",
+     "owner": -1
+    },
+    {
+     "id": 6,
+     "key": "F",
+     "kind": "arena",
+     "name": "天界擂B",
+     "owner": -1
+    },
+    {
+     "id": 7,
+     "key": "A",
+     "kind": "arena",
+     "name": "人界擂A",
+     "owner": -1
+    },
+    {
+     "id": 8,
+     "key": "N",
+     "kind": "altar",
+     "name": "防守祭坛",
+     "owner": 1
+    },
+    {
+     "id": 9,
+     "key": "H",
+     "kind": "monster",
+     "name": "低级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 10,
+     "key": "Z",
+     "kind": "array",
+     "name": "奇异仙阵",
+     "owner": -1
+    },
+    {
+     "id": 11,
+     "key": "D",
+     "kind": "arena",
+     "name": "地界擂B",
+     "owner": -1
+    },
+    {
+     "id": 12,
+     "key": "Y",
+     "kind": "spawn",
+     "name": "防方出生点",
+     "owner": 1
+    },
+    {
+     "id": 13,
+     "key": "W",
+     "kind": "boss",
+     "name": "妖王",
+     "owner": -1
+    },
+    {
+     "id": 14,
+     "key": "I",
+     "kind": "monster",
+     "name": "高级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 15,
+     "key": "J",
+     "kind": "monster",
+     "name": "高级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 16,
+     "key": "C",
+     "kind": "arena",
+     "name": "地界擂A",
+     "owner": -1
+    }
+   ],
+   "edges": [
+    {
+     "a": 1,
+     "b": 2,
+     "time": 8
+    },
+    {
+     "a": 1,
+     "b": 3,
+     "time": 14
+    },
+    {
+     "a": 2,
+     "b": 7,
+     "time": 12
+    },
+    {
+     "a": 2,
+     "b": 16,
+     "time": 12
+    },
+    {
+     "a": 3,
+     "b": 14,
+     "time": 10
+    },
+    {
+     "a": 4,
+     "b": 14,
+     "time": 8
+    },
+    {
+     "a": 5,
+     "b": 6,
+     "time": 10
+    },
+    {
+     "a": 5,
+     "b": 7,
+     "time": 8
+    },
+    {
+     "a": 5,
+     "b": 11,
+     "time": 14
+    },
+    {
+     "a": 6,
+     "b": 11,
+     "time": 8
+    },
+    {
+     "a": 6,
+     "b": 12,
+     "time": 8
+    },
+    {
+     "a": 7,
+     "b": 16,
+     "time": 10
+    },
+    {
+     "a": 8,
+     "b": 11,
+     "time": 8
+    },
+    {
+     "a": 9,
+     "b": 12,
+     "time": 10
+    },
+    {
+     "a": 9,
+     "b": 15,
+     "time": 12
+    },
+    {
+     "a": 10,
+     "b": 15,
+     "time": 6
+    },
+    {
+     "a": 11,
+     "b": 16,
+     "time": 22
+    },
+    {
+     "a": 13,
+     "b": 14,
+     "time": 6
+    },
+    {
+     "a": 13,
+     "b": 15,
+     "time": 8
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "gates": [
+    {
+     "id": 1,
+     "key": "X",
+     "kind": "spawn",
+     "name": "攻方出生点",
+     "owner": 0
+    },
+    {
+     "id": 2,
+     "key": "E",
+     "kind": "arena",
+     "name": "天界擂A",
+     "owner": -1
+    },
+    {
+     "id": 3,
+     "key": "M",
+     "kind": "altar",
+     "name": "攻击祭坛",
+     "owner": 0
+    },
+    {
+     "id": 4,
+     "key": "G",
+     "kind": "monster",
+     "name": "低级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 5,
+     "key": "C",
+     "kind": "arena",
+     "name": "地界擂A",
+     "owner": -1
+    },
+    {
+     "id": 6,
+     "key": "I",
+     "kind": "monster",
+     "name": "高级怪物A",
+     "owner": -1
+    },
+    {
+     "id": 7,
+     "key": "A",
+     "kind": "arena",
+     "name": "人界擂A",
+     "owner": -1
+    },
+    {
+     "id": 8,
+     "key": "Z",
+     "kind": "array",
+     "name": "奇异仙阵",
+     "owner": -1
+    },
+    {
+     "id": 9,
+     "key": "W",
+     "kind": "boss",
+     "name": "妖王",
+     "owner": -1
+    },
+    {
+     "id": 10,
+     "key": "J",
+     "kind": "monster",
+     "name": "高级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 11,
+     "key": "H",
+     "kind": "monster",
+     "name": "低级怪物B",
+     "owner": -1
+    },
+    {
+     "id": 12,
+     "key": "N",
+     "kind": "altar",
+     "name": "防守祭坛",
+     "owner": 1
+    },
+    {
+     "id": 13,
+     "key": "D",
+     "kind": "arena",
+     "name": "地界擂B",
+     "owner": -1
+    },
+    {
+     "id": 14,
+     "key": "F",
+     "kind": "arena",
+     "name": "天界擂B",
+     "owner": -1
+    },
+    {
+     "id": 15,
+     "key": "Y",
+     "kind": "spawn",
+     "name": "防方出生点",
+     "owner": 1
+    },
+    {
+     "id": 16,
+     "key": "B",
+     "kind": "arena",
+     "name": "人界擂B",
+     "owner": -1
+    }
+   ],
+   "edges": [
+    {
+     "a": 1,
+     "b": 2,
+     "time": 10
+    },
+    {
+     "a": 1,
+     "b": 4,
+     "time": 6
+    },
+    {
+     "a": 2,
+     "b": 5,
+     "time": 8
+    },
+    {
+     "a": 2,
+     "b": 7,
+     "time": 10
+    },
+    {
+     "a": 3,
+     "b": 5,
+     "time": 8
+    },
+    {
+     "a": 4,
+     "b": 6,
+     "time": 8
+    },
+    {
+     "a": 5,
+     "b": 7,
+     "time": 12
+    },
+    {
+     "a": 5,
+     "b": 8,
+     "time": 6
+    },
+    {
+     "a": 6,
+     "b": 9,
+     "time": 6
+    },
+    {
+     "a": 7,
+     "b": 16,
+     "time": 6
+    },
+    {
+     "a": 8,
+     "b": 13,
+     "time": 14
+    },
+    {
+     "a": 8,
+     "b": 16,
+     "time": 8
+    },
+    {
+     "a": 9,
+     "b": 10,
+     "time": 6
+    },
+    {
+     "a": 10,
+     "b": 11,
+     "time": 6
+    },
+    {
+     "a": 11,
+     "b": 15,
+     "time": 10
+    },
+    {
+     "a": 12,
+     "b": 13,
+     "time": 6
+    },
+    {
+     "a": 13,
+     "b": 14,
+     "time": 8
+    },
+    {
+     "a": 13,
+     "b": 16,
+     "time": 10
+    },
+    {
+     "a": 14,
+     "b": 15,
+     "time": 8
+    },
+    {
+     "a": 14,
+     "b": 16,
+     "time": 8
+    }
+   ]
+  }
+ ]
+}

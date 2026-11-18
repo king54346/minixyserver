@@ -304,3 +304,19 @@ func loadTalentSetCSV() map[int32]*TalentSetInfo {
 	})
 	return out
 }
+
+// ExamQuestion 是科举答题的一道题（exam.csv）：Ans 0 为是（正确），1 为否（错误）。
+type ExamQuestion struct {
+	ID       int
+	Question string
+	Ans      int
+}
+
+func loadExamCSV() []ExamQuestion {
+	var out []ExamQuestion
+	t := loadCSV("exam.csv")
+	t.each(func() {
+		out = append(out, ExamQuestion{ID: t.int("id"), Question: t.str("question"), Ans: t.int("ans")})
+	})
+	return out
+}
