@@ -25,6 +25,9 @@ import (
 // 的数值是本服定的，可以直接改。
 
 type recruitPool struct {
+	runtimeID int
+	version   int64
+	rareBP    *int
 	name      string      // 卡牌表 from 里的池名
 	grade     int         // 开放等级（客户端界面）
 	rates     map[int]int // 星级 -> 权重
@@ -39,15 +42,17 @@ type recruitPool struct {
 var recruitPools = map[int]*recruitPool{
 	4: {name: "友情点", grade: 10, friend: 100, rates: map[int]int{1: 45, 2: 35, 3: 17, 4: 3}},
 	3: {name: "银两", grade: 10, cash: 10000, rates: map[int]int{1: 50, 2: 35, 3: 15}, freeEvery: 10 * time.Minute},
-	2: {name: "请神符", grade: 2, item: 10114, rates: map[int]int{2: 30, 3: 50, 4: 17, 5: 3}, freeEvery: 24 * time.Hour, tenMin: 4},
-	1: {name: "超级请神符", grade: 6, item: 10317, rates: map[int]int{3: 50, 4: 40, 5: 10}, freeEvery: 72 * time.Hour, tenMin: 5, pity: 10}, // 登峰造极（shop_mgr space_time 259200）
-	5: {name: "灵仙请神符", grade: 15, item: 11461, rates: map[int]int{3: 60, 4: 32, 5: 8}, pity: 10},                                       // 每日推荐：只出所选种族（race_choose_today）
+	2: {name: "请神符", grade: 2, item: 10114, rates: map[int]int{2: 30, 3: 52, 4: 17, 5: 1}, freeEvery: 24 * time.Hour, tenMin: 4},
+	1: {name: "超级请神符", grade: 6, item: 10317, rates: map[int]int{3: 57, 4: 40, 5: 3}, freeEvery: 72 * time.Hour, tenMin: 5, pity: 10}, // 登峰造极：基础金卡 3%，十抽保底不变
+	5: {name: "灵仙请神符", grade: 15, item: 11461, rates: map[int]int{3: 66, 4: 32, 5: 2}, pity: 10},                                      // 每日推荐：普通金卡 2%，另保留 rarePct 稀有卡判定
 }
 
-const (
+var (
 	cashFreePerDay = 5
 	cashPaidPerDay = 99
 )
+
+const ()
 
 // poolPets[池名][星级] = 可出的卡牌类型
 var poolPets = map[string]map[int][]int32{}
@@ -85,7 +90,7 @@ func init() {
 		}
 	}
 	Handle("MALL_PTO.C_OPEN_PET_MALL", func(s *Session, p *Player, _ xym.Msg) {
-		s.SendExt("MALL_PTO.S_OPEN_PET_MALL", p.mallMsg(time.Now()))
+		s.SendExt("MALL_PTO.S_OPEN_PET_MALL", s.recruitMallMsg(p, time.Now()))
 	})
 	Handle("MALL_PTO.C_BUY_PET", onBuyPet)
 }
@@ -112,6 +117,7 @@ type Mall struct {
 	WishMrtj  [5][]int32    `json:"wish_mrtj,omitempty"` // 每日推荐寻英帖，下标 = 种族 1–4
 	Bought    map[int]int   `json:"bought,omitempty"`    // 道具商城今日已买（限购商品）
 	GiftWeek  [2]string     `json:"gift_week,omitempty"` // 特权礼包本周已买（[0]，ISO 周；每周只能买一个周礼包）
+	Gonghe    []int         `json:"gonghe,omitempty"`    // 已买过的 VIP 恭贺礼包（每个只能买一次）
 }
 
 func (p *Player) mall(now time.Time) *Mall {
@@ -190,7 +196,7 @@ func onBuyPet(s *Session, p *Player, m xym.Msg) {
 	if typ > 10 {
 		typ, n = typ-10, 10
 	}
-	pool := recruitPools[typ]
+	pool := s.srv.recruitRule(typ)
 	switch {
 	case pool == nil:
 		s.sendMsg("没有这个招募。")
@@ -211,6 +217,10 @@ func onBuyPet(s *Session, p *Player, m xym.Msg) {
 		free = true
 	}
 	var cash, friend int32
+	var bonus int32
+	if n == 10 {
+		bonus = 500000 // 用户规则：每次成功十连赠送 50 万银两，单抽不赠送。
+	}
 	var item *Item
 	if !free {
 		switch {
@@ -245,13 +255,16 @@ func onBuyPet(s *Session, p *Player, m xym.Msg) {
 	} else if typ == 3 {
 		mall.Cost3Left -= n
 	}
-	if cash > 0 || friend > 0 {
+	if cash > 0 || friend > 0 || bonus > 0 {
 		role, err := s.srv.roles.Update(s.role.UID, func(ro *Role) bool {
-			ro.Cash -= cash
+			ro.Cash += bonus - cash
 			ro.FriendPoint -= friend
 			return true
 		})
 		if err != nil {
+			if item != nil {
+				item.Amount += int32(n)
+			}
 			s.logErr("save role", err)
 			s.sendMsg("服务器存档出错，请稍后再试。")
 			return
@@ -266,23 +279,34 @@ func onBuyPet(s *Session, p *Player, m xym.Msg) {
 	}
 
 	types := drawPets(pool, mall, n, rand.New(rand.NewPCG(uint64(now.UnixNano()), uint64(p.UID))))
+	s.srv.opsResult("recruit", p.UID, pool.version, map[string]any{"pool": typ, "cards": types, "count": n})
 	full := make([]xym.Msg, 0, n)
 	brief := make([]xym.Msg, 0, n)
 	list := make([]xym.Msg, 0, n)
 	p.track(evRecruit, n)
 	yuanbao := typ == 1 || typ == 5 // 登峰造极 / 每日推荐：奖励界面可「转为元神」（huaxing.go）
 	huaxing := []xym.Msg{}
+	var drawn []*Pet
+	var soul int32 // 仅当前持有本体的同名卡发转化魂值。
 	for _, t := range types {
 		list = append(list, xym.Msg{"rtype": 1, "type": t, "count": 1}) // REWARD_TYPE_CARD
 		if yuanbao && p.autoYuanshen(t) {
 			huaxing = append(huaxing, xym.Msg{"type": t})
 			continue
 		}
-		pet := p.gainPet(t) // 已有同类护法就并进去，得神通点（pet_talent.go）
+		soul += p.dupSoulGain(t) // 同名卡自动转化魂值（奖励界面「魂值 +N 点」= PetSoulPoint[星级]，rewardview_mgr）
+		pet := p.gainPet(t)      // 本体缺失时恢复卡牌及历史同名数量。
+		if pet == nil {
+			continue
+		}
+		drawn = append(drawn, pet)
 		full = append(full, p.petFull(pet))
 		brief = append(brief, p.petBrief(pet))
 	}
 	p.saveLog(s)
+	if soul > 0 {
+		s.roleUpdate(func(ro *Role) bool { ro.SoulExp += soul; return true }, "soulexp")
+	}
 	s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0, "pets": full})
 	s.SendExt("PET_PTO.S_PET_LIST", xym.Msg{"is_all": 0, "pets": brief})
 	show := 6 // BOX_SHOWCARD
@@ -294,8 +318,12 @@ func onBuyPet(s *Session, p *Player, m xym.Msg) {
 	case n == 10:
 		show = 9 // PET_TEN
 	}
-	s.SendExt("ETC_PTO.S_REWARD_MSG", xym.Msg{"type": show, "list": list, "huaxing": huaxing})
-	s.SendExt("MALL_PTO.S_OPEN_PET_MALL", p.mallMsg(now))
+	// Keep the ten-card grid; the gift is persisted and pushed through cash above.
+	s.SendExt("ETC_PTO.S_REWARD_MSG", xym.Msg{"type": show, "list": list, "huaxing": huaxing, "cash": bonus})
+	s.SendExt("MALL_PTO.S_OPEN_PET_MALL", s.recruitMallMsg(p, now))
+	if extra := p.fightRelatePets(drawn); len(extra) > 0 {
+		s.petUpdate(p, extra...)
+	}
 }
 
 // drawPets 按池的星级权重抽 n 张；处理保底（pity）和十连至少一张 tenMin 星。
@@ -333,7 +361,7 @@ func drawPets(pool *recruitPool, mall *Mall, n int, rng *rand.Rand) []int32 {
 	out := make([]int32, 0, n)
 	best := 0
 	for i := range n {
-		if len(rare) > 0 && rng.IntN(100) < rarePct { // 每日推荐：2% 出该种族的稀有卡（用户要求）
+		if len(rare) > 0 && pool.rareRoll(rng) {
 			mall.Pity[typ] = 0
 			best = max(best, 5)
 			out = append(out, rare[rng.IntN(len(rare))])
@@ -365,6 +393,9 @@ func drawPets(pool *recruitPool, mall *Mall, n int, rng *rand.Rand) []int32 {
 }
 
 func poolType(pool *recruitPool) int {
+	if pool.runtimeID != 0 {
+		return pool.runtimeID
+	}
 	for t, p := range recruitPools {
 		if p == pool {
 			return t

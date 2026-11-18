@@ -19,6 +19,11 @@ type luckyItem struct {
 }
 
 var luckyItems = map[int]luckyItem{
+	// 秘境及活动兑换的三星整件道具：每份固定兑换一件同星级装备或法术。
+	11487: {drops: []boxDrop{{1, "GPFS3", 1}}, per: 1},
+	11488: {drops: []boxDrop{{1, "GPZB3", 1}}, per: 1},
+	11507: {drops: []boxDrop{{1, "GPZB3", 1}}, per: 1},
+	11508: {drops: []boxDrop{{1, "GPFS3", 1}}, per: 1},
 	11106: {drops: []boxDrop{{85, "GPSP5", 1}, {5, "GPFS5", 1}, {10, "WP11128", 1}}, per: 1},
 	11107: {drops: []boxDrop{{85, "GPJT5", 1}, {5, "GPZB5", 1}, {10, "WP11129", 1}}, per: 1},
 	10122: {drops: []boxDrop{{48, "GPFS3", 1}, {50, "GPFS4", 1}, {2, "GPFS5", 1}}, per: 1},

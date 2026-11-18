@@ -15,10 +15,13 @@ import (
 // 抓包 S_OPEN_JOKE{role 13002 / 23005, max 4, times 4, finish 1}（连续两天、两位不同的 4 星丽人，都是 4 颗心且已点过）；
 // 装备表里 1501–1506 六双鞋的来源只写「解忧」。
 //
-// 估计（没有抓到 C_MAKE_JOKE 的回包）：丽人按日期在 4 星丽人里轮换；前 3 颗心各给 2000 × 心数 银两，
-// 30% 再给一双 1 星鞋；第 4 颗心必给一双鞋（1 / 2 / 3 星 50% / 35% / 15%）。
+// 估计（没有抓到 C_MAKE_JOKE 的回包）：丽人按日期在 4 星丽人里轮换；每次打招呼给 5000 元宝（用户定），
+// 前 3 颗心 30% 再给一双 1 星鞋；第 4 颗心必给一双鞋（1 / 2 / 3 星 50% / 35% / 15%）。
 
-const jokeMax = 4
+const (
+	jokeMax  = 4
+	jokeGold = 5000 // 每次打招呼的回赠元宝（用户 2026-10-30：解忧改成 5000 元宝；原来是 2000 × 心数银两）
+)
 
 // jokeRoles 是轮换的丽人（抓包里出现过 13002 貂蝉、23005 玉面公主）。封面是 char/big/<role>.png，
 // 只挑客户端包里自带大图（script/char_big_<role>.plist）的女性卡，否则封面空白：
@@ -73,10 +76,8 @@ func onMakeJoke(s *Session, p *Player, m xym.Msg) {
 	p.track(evJoke, 1)
 	rng := s.actRng()
 	delta := &bagDelta{}
-	cash := int32(0)
 	shoe := 0
 	if j.Times < jokeMax {
-		cash = int32(2000 * j.Times)
 		if rng.IntN(100) < 30 {
 			shoe = 1
 		}
@@ -87,12 +88,10 @@ func onMakeJoke(s *Session, p *Player, m xym.Msg) {
 		p.giveSuit(l[rng.IntN(len(l))], delta)
 	}
 	p.saveLog(s)
-	if cash > 0 {
-		s.roleUpdate(func(ro *Role) bool { ro.Cash += cash; return true }, "cash")
-	}
+	s.roleUpdate(func(ro *Role) bool { ro.Gold += jokeGold; return true }, "gold")
 	list := s.sendDelta(p, delta)
 	r := rewardMsg(1, list)
-	r["cash"] = cash
+	r["gold"] = jokeGold
 	s.SendExt("ETC_PTO.S_REWARD_MSG", r)
 	s.jokeMsg(p)
 }

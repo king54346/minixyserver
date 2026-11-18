@@ -89,7 +89,7 @@ func (p *Player) reqSlots(m xym.Msg) (no, leader int, slots [8]*Slot) {
 			continue
 		}
 		slots[pos-1] = &Slot{Pet: pet,
-			Suit: [3]int{int(x["spos1"].(int64)), int(x["spos2"].(int64)), int(x["spos3"].(int64))},
+			Suit: [3]int{lineupSuitPos(x, 0), lineupSuitPos(x, 1), lineupSuitPos(x, 2)},
 			Book: [2]int{int(x["mpos1"].(int64)), int(x["mpos2"].(int64))}}
 		p.fixSlotGear(slots[pos-1]) // 装备按部位归位
 	}
@@ -126,8 +126,7 @@ func onLineupOneClick(s *Session, p *Player, m xym.Msg) {
 	p.applyPlan(lu, p.planEquip(slots))
 	info := []xym.Msg{}
 	for i, sl := range lu.Slots {
-		info = append(info, xym.Msg{"pos": i + 1, "pet": sl.Pet, "spos1": sl.Suit[0], "spos2": sl.Suit[1], "spos3": sl.Suit[2],
-			"mpos1": sl.Book[0], "mpos2": sl.Book[1]})
+		info = append(info, lineupSlotMsg(i+1, sl))
 	}
 	s.SendExt("LINEUP_PTO.S_SEND_ONE_CLICK_EQUIP_LINEUP", xym.Msg{"cno": m["cno"],
 		"lineups": []xym.Msg{{"lineup_no": no, "leader": leader, "info": info}}})

@@ -12,6 +12,7 @@ import (
 //   - 第 n 次消耗 ⌊n² × jingxiu_cost / 10⌋ 个本属性元素（YuanSuList[kind]：道 10136 土 10132 水 10134
 //     火 10133 雷 10131 圣 10135）和 星级² × n² × 4000 银两（getCostNum / getCostMoney）。
 //   - 效果见 battle/jingxiu.go；生效次数 = min(精修次数, 法术书等级)（详情里「(等级/次数)」），人物不到 31 级不生效。
+//   - 精修吸纳石（10311，C_PULL_OUT_MAGIC_JINGXIU）的取出与其余石头一起整合在 pull_out.go。
 
 const jingxiuGrade = 31
 
@@ -75,46 +76,4 @@ func (p *Player) wornBookJX(fp int) []int {
 		}
 	}
 	return out
-}
-
-// 精修吸纳石（道具 10311，ItemListView 对「未加锁且有精修等级」的法术书使用）：
-// ITEM_PTO.C_PULL_OUT_MAGIC_JINGXIU{pos, type}，消耗 1 个吸纳石，退回该书历次精修用掉的全部元素（银两不退），
-// 精修次数清零。
-const jingxiuPullItem = 10311
-
-func init() {
-	Handle("ITEM_PTO.C_PULL_OUT_MAGIC_JINGXIU", onPullOutJingxiu)
-}
-
-func onPullOutJingxiu(s *Session, p *Player, m xym.Msg) {
-	b := p.bookByPos(int(m["pos"].(int64)))
-	var mi *gamedata.MagicInfo
-	if b != nil {
-		mi = gamedata.Magics[b.Type]
-	}
-	switch {
-	case mi == nil || b.JX == 0:
-		s.sendMsg("该法术没有精修材料可以取出。")
-		return
-	case b.Locked:
-		s.sendMsg("法术已加锁。")
-		return
-	case p.itemCount(jingxiuPullItem) < 1:
-		s.sendMsg("精修吸纳石不足。")
-		return
-	}
-	var back int32
-	for n := 1; n <= b.JX; n++ {
-		e, _ := jingxiuCost(mi, n)
-		back += e
-	}
-	d := &bagDelta{}
-	d.items, d.removed = p.takeItems(jingxiuPullItem, 1)
-	if back > 0 {
-		d.items = append(d.items, p.addItem(jingxiuElement[mi.Kind], back)...)
-	}
-	b.JX = 0
-	p.saveLog(s)
-	s.sendDelta(p, d)
-	s.SendExt("ITEM_PTO.S_UPDATE_BOOK", xym.Msg{"is_all": 0, "books": []xym.Msg{b.msg()}})
 }

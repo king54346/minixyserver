@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -87,7 +88,7 @@ func (srv *Server) listRecords(day string, uid int32) []string {
 	ents, _ := os.ReadDir(filepath.Join(srv.cfg.RecordDir, filepath.Base(day)))
 	var out []string
 	for _, e := range ents {
-		if n := e.Name(); strings.HasSuffix(n, ".rec") && (uid == 0 || strings.Contains(n, fmt.Sprintf("_%d_", uid))) {
+		if n := e.Name(); strings.HasSuffix(n, ".rec") && (uid == 0 || recordOwner(n) == uid) {
 			out = append(out, day+"/"+n)
 		}
 	}
@@ -106,4 +107,20 @@ func (srv *Server) readRecord(rel string) ([]byte, error) {
 		return nil, fmt.Errorf("bad record path %q", rel)
 	}
 	return os.ReadFile(filepath.Join(srv.cfg.RecordDir, parts[0], parts[1]))
+}
+
+// recordOwner matches the UID field, not the sequence number.
+func recordOwner(name string) int32 {
+	fields := strings.Split(strings.TrimSuffix(filepath.Base(name), ".rec"), "_")
+	if len(fields) != 3 || !strings.HasSuffix(name, ".rec") {
+		return 0
+	}
+	if len(fields[0]) != 6 {
+		return 0
+	}
+	uid, err := strconv.ParseInt(fields[1], 10, 32)
+	if err != nil || uid <= 0 {
+		return 0
+	}
+	return int32(uid)
 }

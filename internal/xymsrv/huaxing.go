@@ -118,7 +118,7 @@ func onHuaxing(s *Session, p *Player, m xym.Msg) {
 	}
 	p.HuaxingTimes[typ]++
 	d := &bagDelta{}
-	p.giveCard(typ, d)
+	p.mergeCard(typ, d) // 化形合成同名卡并入本体，不是获得（不发自动转化魂值，bag.go）
 	p.saveLog(s)
 	list := s.sendDelta(p, d)
 	reply()

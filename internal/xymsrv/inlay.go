@@ -5,14 +5,15 @@ import (
 	"slices"
 	"time"
 
+	"turnrpg/internal/battle"
 	"turnrpg/internal/gamedata"
 	"turnrpg/internal/xym"
 )
 
 // 装备镶嵌与炼神（装备详情「镶嵌」「炼神」→ view/SuitDetailView.lua、view/LianShengMainView.lua）。
 //
-// 镶嵌（ITEM_PTO.C_ADD_PROP_STONE{itemnum, stone_type} / C_PULL_OUT_SUIT_STONE{itemnum} /
-// C_PULL_OUT_ALL_SUIT_STONE{suits[itemnum]}，回 S_UPDATE_SUIT，装备的 stone 字段是宝石道具号）：
+// 镶嵌（ITEM_PTO.C_ADD_PROP_STONE{itemnum, stone_type}，回 S_UPDATE_SUIT，装备的 stone 字段是宝石道具号；
+// 凿晶石取出 C_PULL_OUT_SUIT_STONE / C_PULL_OUT_ALL_SUIT_STONE 与其余石头一起整合在 pull_out.go）：
 //   - logic/item_mgr.lua：武器镶太阳石（物理攻击）/ 红玛瑙（法术伤害），衣服镶光芒石（物理抗性）/ 月亮石（法术抗性），
 //     鞋镶神秘石（被治疗效果）/ 黑玉石（治疗效果），各 +宝石等级%（getStoneDesc2）。
 //   - 宝石描述：装备达到 20 级后可镶嵌。镶嵌规则（SuitDetailView stoneDesc）：只能换成相同或更高等级的宝石，原宝石返还；用凿晶石 10216 取出。
@@ -37,7 +38,6 @@ import (
 const (
 	lianshenStone = 10140
 	ningshenStone = 10342
-	zaojingStone  = 10216
 	lsFreeDaily   = 3
 	lsMaxSaved    = 10
 	inlayGrade    = 20 // 宝石描述「武器达到20级后可镶嵌」
@@ -91,17 +91,6 @@ func (p *Player) lsFree() int {
 
 func init() {
 	Handle("ITEM_PTO.C_ADD_PROP_STONE", onAddStone)
-	Handle("ITEM_PTO.C_PULL_OUT_SUIT_STONE", func(s *Session, p *Player, m xym.Msg) {
-		s.pullStones(p, []int32{int32(m["itemnum"].(int64))})
-	})
-	Handle("ITEM_PTO.C_PULL_OUT_ALL_SUIT_STONE", func(s *Session, p *Player, m xym.Msg) {
-		var nums []int32
-		l, _ := m["suits"].([]xym.Msg)
-		for _, x := range l {
-			nums = append(nums, int32(x["itemnum"].(int64)))
-		}
-		s.pullStones(p, nums)
-	})
 	Handle("ITEM_PTO.C_ON_QUEST_REFRESH_SUIT_SKILL_FREECNT", func(s *Session, p *Player, m xym.Msg) {
 		s.SendExt("ITEM_PTO.S_QUEST_REFRESH_SUIT_SKILL_FREECNT", xym.Msg{"free_count": p.lsFree()})
 	})
@@ -133,6 +122,10 @@ func onAddStone(s *Session, p *Player, m xym.Msg) {
 	su := p.suitByNum(int32(m["itemnum"].(int64)))
 	gem := int(m["stone_type"].(int64))
 	_, slot, ok := gemKind(gem)
+	if su != nil && isSuitMaterial(su.Type) {
+		s.retMsg("强化材料不能镶嵌宝石。")
+		return
+	}
 	switch {
 	case su == nil || gamedata.Suits[su.Type] == nil:
 		s.retMsg("装备不存在。")
@@ -160,33 +153,6 @@ func onAddStone(s *Session, p *Player, m xym.Msg) {
 	p.saveLog(s)
 	s.sendDelta(p, d)
 	s.sendSuit(su)
-}
-
-// pullStones 用凿晶石取出装备上的宝石（每件一个凿晶石，不够就取到用完为止）。
-func (s *Session) pullStones(p *Player, nums []int32) {
-	d := &bagDelta{}
-	var changed []xym.Msg
-	for _, n := range nums {
-		su := p.suitByNum(n)
-		if su == nil || su.Stone == 0 {
-			continue
-		}
-		if p.itemCount(zaojingStone) < 1 {
-			s.retMsg("凿晶石不足。")
-			break
-		}
-		ch, rm := p.takeItems(zaojingStone, 1)
-		d.items, d.removed = append(d.items, ch...), append(d.removed, rm...)
-		d.items = append(d.items, p.addItem(su.Stone, 1)...)
-		su.Stone = 0
-		changed = append(changed, su.msg())
-	}
-	p.saveLog(s)
-	s.sendDelta(p, d)
-	if changed == nil {
-		changed = []xym.Msg{}
-	}
-	s.SendExt("ITEM_PTO.S_UPDATE_SUIT", xym.Msg{"is_all": 0, "suits": changed})
 }
 
 // ensureSkill：装备到 20 级时开启炼神效果（帮助页「装备升级到20后将开启炼神效果」），随机给一个；返回是否新给了。
@@ -229,6 +195,10 @@ func (su *Suit) normalizeSkills() bool {
 
 func onRefreshSuitSkill(s *Session, p *Player, m xym.Msg) {
 	su := p.suitByNum(int32(m["itemnum"].(int64)))
+	if su != nil && isSuitMaterial(su.Type) {
+		s.retMsg("强化材料不能炼神。")
+		return
+	}
 	if su == nil || su.Grade < lsFamilies[0].grade {
 		s.retMsg("装备升级到 20 级后才能炼神。")
 		if su != nil {
@@ -260,6 +230,10 @@ func onRefreshSuitSkill(s *Session, p *Player, m xym.Msg) {
 
 func onSaveSuitSkill(s *Session, p *Player, m xym.Msg) {
 	su := p.suitByNum(int32(m["itemnum"].(int64)))
+	if su != nil && isSuitMaterial(su.Type) {
+		s.retMsg("强化材料不能炼神。")
+		return
+	}
 	if su == nil || su.Skill == 0 {
 		s.retMsg("当前没有炼神效果。")
 		return
@@ -288,6 +262,10 @@ func onSaveSuitSkill(s *Session, p *Player, m xym.Msg) {
 func onReplaceSuitSkill(s *Session, p *Player, m xym.Msg) {
 	su := p.suitByNum(int32(m["itemnum"].(int64)))
 	pos := int(m["pos"].(int64))
+	if su != nil && isSuitMaterial(su.Type) {
+		s.retMsg("强化材料不能炼神。")
+		return
+	}
 	if su == nil || pos < 1 || pos > len(su.Saved) {
 		s.retMsg("备用效果不存在。")
 		return
@@ -329,6 +307,50 @@ func (p *Player) gearExtras(fp int) (tals []int32, gems [6]int) {
 	}
 	slices.Sort(tals)
 	return tals, gems
+}
+
+func (p *Player) lineupSetHP() (bonus [5]int32) {
+	for fp := 1; fp <= lineupSlots; fp++ {
+		talents, _ := p.gearExtras(fp)
+		for _, id := range talents {
+			if race, pct := battle.RaceHPSet(id); pct > 0 {
+				if pet := p.petAtFightPos(fp); pet != nil {
+					_, hp := p.petStatsBeforeSetHP(pet)
+					bonus[race] += int32(int64(hp) * int64(pct) / 100)
+				}
+			}
+		}
+	}
+	return bonus
+}
+
+func (p *Player) petSetHP(pet *Pet) int32 {
+	pi := gamedata.Pets[pet.Type]
+	if pi == nil || pi.Race < 1 || pi.Race > 4 || p.fightPos(pet.BagPos) == 0 {
+		return 0
+	}
+	return p.lineupSetHP()[pi.Race]
+}
+
+// pushSetHPPanel refreshes recipients when a teamwide set bonus changes.
+func (s *Session) pushSetHPPanel(p *Player) {
+	next := p.lineupSetHP()
+	previous := s.setHPPanel
+	s.setHPPanel = next
+	if next == previous {
+		return
+	}
+	var updates []xym.Msg
+	for fp := 1; fp <= lineupSlots; fp++ {
+		if pet := p.petAtFightPos(fp); pet != nil {
+			if pi := gamedata.Pets[pet.Type]; pi != nil && pi.Race >= 1 && pi.Race <= 4 && next[pi.Race] != previous[pi.Race] {
+				updates = append(updates, p.petFull(pet))
+			}
+		}
+	}
+	if len(updates) > 0 {
+		s.sendUpdates("PET_PTO.S_UPDATE_PET", "pets", updates)
+	}
 }
 
 // setBoost 是激活的套装效果的神通号：炼神效果都是 1 级，套装等级由宝石决定 = max(1, ⌊三件宝石等级和/3⌋)，

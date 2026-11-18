@@ -117,13 +117,83 @@ func (pet *Pet) absorb() {
 	pet.TLAdd++
 }
 
-// gainPet 是获得一张卡：已有同类护法就并进去（官方不留重复卡），否则新发一张。
+// markOwned 把 typ 记入同名永久记录，融魂后也不消除。
+func (p *Player) markOwned(typ int32) {
+	if p.OwnedHistory == nil {
+		p.OwnedHistory = map[int32]bool{}
+	}
+	p.OwnedHistory[typ] = true
+}
+
+// everOwned 是 typ 是否曾获得过（含已融掉的）。
+func (p *Player) everOwned(typ int32) bool {
+	return p.OwnedHistory[typ]
+}
+
+// migrateOwned 旧存档迁移：把当前持有的护法补进同名永久记录（融掉过的无法追溯）。
+func (p *Player) migrateOwned() bool {
+	fixed := false
+	counts := map[int32]int{}
+	for _, pet := range p.Pets {
+		counts[pet.Type] += pet.TLAdd + 1
+		if !p.OwnedHistory[pet.Type] {
+			p.markOwned(pet.Type)
+			fixed = true
+		}
+	}
+	for typ, owned := range p.OwnedHistory {
+		if owned {
+			counts[typ] = max(counts[typ], 1)
+		}
+	}
+	for typ, count := range counts {
+		if p.OwnedCopies[typ] < count {
+			if p.OwnedCopies == nil {
+				p.OwnedCopies = map[int32]int{}
+			}
+			p.OwnedCopies[typ] = count
+			fixed = true
+		}
+	}
+	return fixed
+}
+
+// dupSoulGain 须在 gainPet 之前调用。仅当前有本体时发同名转化魂值；
+// 缺少本体时奖励用于恢复卡牌，不再同时发放自动转化魂值。
+func (p *Player) dupSoulGain(typ int32) int32 {
+	if p.petByType(typ) != nil {
+		if pi := gamedata.Pets[typ]; pi != nil && pi.Star >= 1 && pi.Star <= 5 {
+			return petSoulPoint[pi.Star]
+		}
+	}
+	return 0
+}
+
+// gainPet 已有本体时并入一张同名卡；手动融魂后重新获得本体时恢复保留的同名数。
+// 累计历史与飞升等消耗的同名卡不参与恢复。
 func (p *Player) gainPet(typ int32) *Pet {
-	if old := p.petByType(typ); old != nil {
+	p.migrateOwned()
+	old := p.petByType(typ)
+	if p.OwnedCopies == nil {
+		p.OwnedCopies = map[int32]int{}
+	}
+	p.OwnedCopies[typ]++
+	p.markOwned(typ)
+	if old != nil {
 		old.absorb()
 		return old
 	}
-	return p.addPet(typ)
+	pet := p.addPet(typ)
+	for range p.MeltedCopies[typ] {
+		pet.absorb()
+	}
+	delete(p.MeltedCopies, typ)
+	return pet
+}
+
+// receivePet 对商店、聚魂和邮件使用同一套本体恢复及同名累计规则。
+func (p *Player) receivePet(typ int32) *Pet {
+	return p.gainPet(typ)
 }
 
 func (p *Player) petByType(typ int32) *Pet {
@@ -147,8 +217,15 @@ func (p *Player) inLineup(bagPos int) bool {
 	return false
 }
 
-// mergeDuplicates 把存档里不在阵容中的重复卡并进同类里保留的那张（旧存档迁移，返还它们的境界与已花神通点不计）。
+// mergeDuplicates 合并旧存档重复卡；飞升可获得的类型即使都在阵中也合并并修复引用。
+// 保留在阵且等级较高的本体；其余卡按同名数量并入，不重复发放获得奖励。
 func (p *Player) mergeDuplicates() bool {
+	ascended := map[int32]bool{}
+	for _, pi := range gamedata.Pets {
+		if pi.Upgrade != 0 {
+			ascended[pi.Upgrade] = true
+		}
+	}
 	byType := map[int32][]*Pet{}
 	for _, pet := range p.Pets {
 		byType[pet.Type] = append(byType[pet.Type], pet)
@@ -166,8 +243,9 @@ func (p *Player) mergeDuplicates() bool {
 			return a.Grade > b.Grade
 		})
 		for _, x := range l[1:] {
-			if !p.inLineup(x.BagPos) {
+			if !p.inLineup(x.BagPos) || ascended[x.Type] {
 				l[0].mergeFrom(x)
+				p.mergePetLineups(l[0], x)
 				drop[x] = true
 			}
 		}
@@ -193,8 +271,10 @@ func init() {
 }
 
 func (s *Session) petUpdate(p *Player, pets ...*Pet) {
-	l := make([]xym.Msg, 0, len(pets))
-	for _, pet := range pets {
+	all := append([]*Pet(nil), pets...)
+	all = append(all, p.fightRelatePets(pets)...)
+	l := make([]xym.Msg, 0, len(all))
+	for _, pet := range all {
 		l = append(l, p.petFull(pet))
 	}
 	s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0, "pets": l})
@@ -317,6 +397,12 @@ func onPetToPoint(s *Session, p *Player, m xym.Msg) {
 func (p *Player) removePet(pet *Pet) {
 	for i, x := range p.Pets {
 		if x == pet {
+			// 仅取本体数量下限：合并两张卡后删除来源卡时，不能把已合并的数量再算一次。
+			if p.OwnedCopies == nil {
+				p.OwnedCopies = map[int32]int{}
+			}
+			p.OwnedCopies[pet.Type] = max(p.OwnedCopies[pet.Type], pet.TLAdd+1)
+			p.markOwned(pet.Type)
 			p.Pets = append(p.Pets[:i], p.Pets[i+1:]...)
 			return
 		}

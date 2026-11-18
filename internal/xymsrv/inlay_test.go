@@ -28,7 +28,7 @@ func TestInlay(t *testing.T) {
 	p.addItem(10148, 1) // 8 级太阳石
 	p.addItem(10143, 1)
 	p.addItem(10165, 1) // 光芒石（衣服用）
-	p.addItem(zaojingStone, 1)
+	p.addItem(itemZaojingStone, 1)
 	p.mu.Unlock()
 	add := func(gem int) {
 		c.sendExt("ITEM_PTO.C_ADD_PROP_STONE", xym.Msg{"itemnum": w.ItemNum, "stone_type": gem})
@@ -49,7 +49,7 @@ func TestInlay(t *testing.T) {
 	}
 	c.sendExt("ITEM_PTO.C_PULL_OUT_SUIT_STONE", xym.Msg{"itemnum": w.ItemNum})
 	c.until(t, "ITEM_PTO.S_UPDATE_SUIT")
-	if w.Stone != 0 || p.itemCount(10148) != 1 || p.itemCount(zaojingStone) != 0 {
+	if w.Stone != 0 || p.itemCount(10148) != 1 || p.itemCount(itemZaojingStone) != 0 {
 		t.Fatalf("pull out %d", w.Stone)
 	}
 }
@@ -160,6 +160,52 @@ func TestShownSetSkill(t *testing.T) {
 	}
 	if tals, _ := p.gearExtras(1); len(tals) != 0 {
 		t.Fatalf("set talents after break %v", tals)
+	}
+}
+
+func TestRaceHPSetUpdatesPanelAndFightPower(t *testing.T) {
+	c, p, _ := actWorld(t, "sethppanel")
+	p.mu.Lock()
+	holder, recipient := p.petAtFightPos(1), p.petAtFightPos(2)
+	w := p.addSuit(suitOfKind("ITK_WEAPON", 5))
+	sh := p.addSuit(suitOfKind("ITK_SHIRT", 5))
+	w.Skill, sh.Skill = 21201, 21201
+	w.Grade = 20
+	p.addItem(10146, 1)
+	p.fightSlot(1).Suit[0] = w.Pos
+	_, beforeHP := p.petStats(recipient)
+	beforeCap := p.petCap(recipient)
+	p.mu.Unlock()
+
+	readRecipientHP := func() int {
+		for range 2 {
+			panel := c.until(t, "PET_PTO.S_UPDATE_PET")["PET_PTO.S_UPDATE_PET"]
+			for _, row := range panel["pets"].([]xym.Msg) {
+				if num(row, "npcnum") == int(recipient.NpcNum) {
+					return num(row, "hp")
+				}
+			}
+		}
+		t.Fatal("套装变化未刷新受益护法的面板")
+		return 0
+	}
+	c.sendExt("ITEM_PTO.C_SUIT_ON", xym.Msg{"itemnum": sh.ItemNum, "fight_pos": 1})
+	gotHP := readRecipientHP()
+	p.mu.Lock()
+	_, holderHP := p.petStatsBeforeSetHP(holder)
+	gotCap := p.petCap(recipient)
+	entry, source := p.fighterOf(recipient, 2), p.fighterOf(holder, 1)
+	p.mu.Unlock()
+	if gotHP != int(beforeHP+holderHP/100) || gotCap <= beforeCap || entry.MaxHP != int32(gotHP) || slices.Contains(source.Talents, int32(21201)) {
+		t.Fatalf("面板=%d 战力=%f 入场=%d 开场神通=%v", gotHP, gotCap, entry.MaxHP, source.Talents)
+	}
+	c.sendExt("ITEM_PTO.C_ADD_PROP_STONE", xym.Msg{"itemnum": w.ItemNum, "stone_type": 10146})
+	if got := readRecipientHP(); got != int(beforeHP+holderHP*2/100) {
+		t.Fatalf("镶嵌升级套装后气血=%d，预期=%d", got, beforeHP+holderHP*2/100)
+	}
+	c.sendExt("ITEM_PTO.C_SUIT_OFF", xym.Msg{"fight_pos": 1, "wear_pos": 2})
+	if got := readRecipientHP(); got != int(beforeHP) {
+		t.Fatalf("卸下套装后气血=%d，预期=%d", got, beforeHP)
 	}
 }
 

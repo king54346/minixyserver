@@ -223,7 +223,7 @@ func onTJToSoul(s *Session, p *Player, m xym.Msg) {
 			removed = append(removed, xym.Msg{"itemnum": x.ItemNum})
 		} else {
 			x := p.bookByPos(int(id))
-			if x == nil || x.Locked || p.bookWorn(x.Pos) || magicStar(x.Type) != 5 {
+			if x == nil || x.Locked || p.bookWorn(x.Pos) || magicStar(x.Type) != 5 || isBookMaterial(x.Type) {
 				continue
 			}
 			p.removeBook(x)

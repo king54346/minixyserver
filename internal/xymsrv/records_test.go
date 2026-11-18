@@ -2,6 +2,7 @@ package xymsrv
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -52,6 +53,32 @@ func TestRecordsSaved(t *testing.T) {
 	}
 
 	h := srv.AdminHandler()
+	// A matching sequence number must not be mistaken for the owner UID.
+	other := filepath.Join(cfg.RecordDir, filepath.Dir(files[0]), fmt.Sprintf("123456_%d_%d.rec", uid+1, uid))
+	if err := os.WriteFile(other, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	owner := strconv.Itoa(int(uid))
+	list := httptest.NewRecorder()
+	h.ServeHTTP(list, httptest.NewRequest("GET", "/records/player?uid="+owner, nil))
+	if list.Code != 200 || !strings.Contains(list.Body.String(), `"total":1`) ||
+		!strings.Contains(list.Body.String(), files[0]) {
+		t.Fatalf("record list: %d %s", list.Code, list.Body)
+	}
+	detail := httptest.NewRecorder()
+	h.ServeHTTP(detail, httptest.NewRequest("GET", "/records/detail?uid="+owner+"&f="+files[0], nil))
+	if detail.Code != 200 || !strings.Contains(detail.Body.String(), `"commands":[`) ||
+		!strings.Contains(detail.Body.String(), `"name1":`) {
+		t.Fatalf("record detail: %d %s", detail.Code, detail.Body)
+	}
+	wrong := httptest.NewRecorder()
+	h.ServeHTTP(wrong, httptest.NewRequest("GET", "/records/detail?uid="+strconv.Itoa(int(uid+1))+"&f="+files[0], nil))
+	if wrong.Code != 400 {
+		t.Fatalf("cross-role record: %d", wrong.Code)
+	}
+	if err := os.Remove(other); err != nil {
+		t.Fatal(err)
+	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "/records/file?f="+files[0], nil))
 	if !bytes.Equal(w.Body.Bytes(), body) {

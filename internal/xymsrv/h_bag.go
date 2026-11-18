@@ -102,6 +102,7 @@ func bookSlot(wp int) int {
 // gearChanged：穿脱后回 S_WEAR_SUIT / S_WEAR_BOOK（客户端等这把锁）和该位卡牌的新属性。
 func (s *Session) gearChanged(p *Player, _ int, suit bool) {
 	p.saveLog(s)
+	s.setHPPanel = p.lineupSetHP()
 	if suit {
 		s.SendExt("ITEM_PTO.S_WEAR_SUIT", p.wearSuitMsg())
 	} else {
@@ -138,6 +139,11 @@ func onSuitOn(s *Session, p *Player, m xym.Msg) {
 		s.gearChanged(p, fp, true)
 		return
 	}
+	if isSuitMaterial(suit.Type) { // 强化材料只作强化消耗品；脱下分支在前，已误穿的仍可手动卸
+		s.sendMsg("强化材料不能穿戴。")
+		s.SendExt("ITEM_PTO.S_WEAR_SUIT", p.wearSuitMsg())
+		return
+	}
 	for _, x := range p.lineup(p.FightNo).Slots { // 同一阵容里一件装备只能穿在一个位置（不同阵容可以共用）
 		if x != nil && x.Suit[k] == suit.Pos {
 			x.Suit[k] = 0
@@ -160,6 +166,11 @@ func onBookOn(s *Session, p *Player, m xym.Msg) {
 	if sl.Book[wp] == book.Pos { // 同上：对已穿在这一格的书再点一次 = 卸下
 		sl.Book[wp] = 0
 		s.gearChanged(p, fp, false)
+		return
+	}
+	if isBookMaterial(book.Type) { // 法术强化材料只作强化消耗品；脱下分支在前，已误穿的仍可手动卸
+		s.sendMsg("强化材料不能穿戴。")
+		s.SendExt("ITEM_PTO.S_WEAR_BOOK", p.wearBookMsg())
 		return
 	}
 	for _, x := range p.lineup(p.FightNo).Slots { // 同一阵容里一本书只能穿在一个位置
@@ -260,6 +271,45 @@ func (s *Session) addCash(n int32) *Role {
 	return role
 }
 
+// expBookItems：秘境掉的法术强化材料道具 → 法术（magic.csv 17001–17004，客户端 magic_mgr SPECIAL_MAGIC_TO_ITEMS）
+// 和作材料时的经验（道具说明：可增加 20 / 50 / 100 / 200 点法术强化经验）。
+var expBookItems = map[int]struct {
+	book int32
+	exp  int32
+}{11489: {17001, 20}, 11490: {17002, 50}, 11491: {17003, 100}, 11492: {17004, 200}}
+
+const itemRandomZfBook = 11254 // 随机阵法书
+
+// 无字天书碎片合成：客户端道具说明「20个碎片可以合成一部[无字天书]！」。
+const (
+	tianshuPartItem = 11154 // 无字天书碎片
+	tianshuPartNeed = 20    // 20 个碎片 → 1 部无字天书（11153，见 disishentong.go 的 wuziTianshu）
+)
+
+// mixTianshuPart 按 20:1 把无字天书碎片合成整本无字天书；want 是要合成的份数（0/负数=能合几份合几份）。
+func (s *Session) mixTianshuPart(p *Player, want int32) {
+	have := p.itemCount(tianshuPartItem)
+	if have < tianshuPartNeed {
+		s.sendMsg(fmt.Sprintf("需要 %d 个无字天书碎片才能合成一部（当前 %d 个）。", tianshuPartNeed, have))
+		return
+	}
+	times := have / tianshuPartNeed
+	if want > 0 && want < times {
+		times = want
+	}
+	if times <= 0 {
+		return
+	}
+	d := &bagDelta{}
+	ch, rm := p.takeItems(tianshuPartItem, times*tianshuPartNeed)
+	d.items, d.removed = append(d.items, ch...), append(d.removed, rm...)
+	d.items = append(d.items, p.addItem(wuziTianshu, times)...)
+	d.gains = append(d.gains, gain{rtItem, wuziTianshu, times})
+	p.saveLog(s)
+	list := s.sendDelta(p, d)
+	s.SendExt("ETC_PTO.S_REWARD_MSG", xym.Msg{"type": boxItem, "item": wuziTianshu, "list": list})
+}
+
 // onUseItem：C_USE_ITEM{pos, type, use_num, choose, usetype}。客户端不等回包，结果用
 // S_UPDATE_ITEM / S_REMOVE_ITEM、新得的东西和 S_REWARD_MSG 告诉它。
 func onUseItem(s *Session, p *Player, m xym.Msg) {
@@ -267,6 +317,29 @@ func onUseItem(s *Session, p *Player, m xym.Msg) {
 	n := int32(max(m["use_num"].(int64), 1))
 	if it == nil || it.Type != int(m["type"].(int64)) || it.Amount < 1 {
 		s.sendMsg("道具不存在。")
+		return
+	}
+	if it.Type == terrSoulItem { // 神魂：使用后 +1 洞府神魂（洞府修为 20 级后每次修炼要 1 个）
+		n := min(int(n), int(it.Amount))
+		if n <= 0 {
+			return
+		}
+		d := &bagDelta{}
+		ch, rm := p.takeItems(it.Type, int32(n))
+		d.items, d.removed = append(d.items, ch...), append(d.removed, rm...)
+		p.df().GodSoul += int32(n)
+		p.saveLog(s)
+		s.sendDelta(p, d)
+		s.retMsg(fmt.Sprintf("使用 %d 个神魂，洞府神魂 +%d。", n, n))
+		return
+	}
+	// 无字天书碎片（11154）：道具说明是「20个碎片可以合成一部[无字天书]！」，
+	// 客户端没有单独的合成界面（天书界只负责用整本升级第四神通），所以走「使用」判定。
+	if it.Type == tianshuPartItem {
+		s.mixTianshuPart(p, n)
+		return
+	}
+	if s.composeFrame(p, it) {
 		return
 	}
 	info := gamedata.Items[it.Type]
@@ -303,7 +376,7 @@ func onUseItem(s *Session, p *Player, m xym.Msg) {
 			cash += p.grantReward(gamedata.Rewards[choose], rng, d)
 		}
 	case boxOf(it.Type) != nil: // 宝箱 / 钥匙：开 n 次，各扣一个
-		bk := boxOf(it.Type)
+		bk := s.srv.boxRule(it.Type)
 		if n = min(n, p.boxCount(bk)); n < 1 {
 			s.sendMsg("宝箱和钥匙要各有一个才能开启。")
 			return
@@ -316,6 +389,24 @@ func onUseItem(s *Session, p *Player, m xym.Msg) {
 		}
 	case info.Cash > 0: // 银锭
 		cash += int32(info.Cash) * n
+	case expBookItems[it.Type].book != 0: // 悟法随想 / 心得、法术秘要 / 奥义：变成法术背包里的强化材料
+		e := expBookItems[it.Type]
+		if n = min(n, int32(p.BagLimit[bagBook]-len(p.Books))); n < 1 {
+			s.sendMsg("法术背包已满。")
+			return
+		}
+		for range n {
+			b := p.addBook(e.book)
+			b.Exp = e.exp - baseExp[magicStar(e.book)] // 作材料时的经验 = 道具说明里的点数
+			d.books = append(d.books, b)
+			d.gains = append(d.gains, gain{rtMagic, int(e.book), 1})
+		}
+	case it.Type == itemRandomZfBook: // 随机阵法书：每本随机得一本阵法书（天覆…蛇蟠）
+		for range n {
+			id := zfBook0 + 1 + rng.IntN(8)
+			d.items = append(d.items, p.addItem(id, 1)...)
+			d.gains = append(d.gains, gain{rtItem, id, 1})
+		}
 	default:
 		s.sendMsg("「" + strings.TrimSpace(info.Name) + "」暂时无法在这里使用。")
 		return

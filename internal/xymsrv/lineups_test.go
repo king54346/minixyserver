@@ -122,3 +122,32 @@ func TestLineupNeedLeader(t *testing.T) {
 		t.Fatalf("lineup with leader not saved: %+v", p.lineup(1))
 	}
 }
+
+// TestExpBookItems：悟法心得用掉后变成法术背包里的强化材料（作材料 50 点经验）；随机阵法书给一本阵法书。
+func TestExpBookItems(t *testing.T) {
+	c, p, _ := actWorld(t, "expbook")
+	p.mu.Lock()
+	it := p.addItem(11490, 2)[0]
+	zf := p.addItem(itemRandomZfBook, 3)[0]
+	books := len(p.Books)
+	p.mu.Unlock()
+	c.sendExt("ITEM_PTO.C_USE_ITEM", xym.Msg{"pos": it.Pos, "type": 11490, "use_num": 2, "choose": 0, "usetype": 1})
+	c.until(t, "ETC_PTO.S_REWARD_MSG")
+	p.mu.Lock()
+	if len(p.Books) != books+2 || p.Books[len(p.Books)-1].Type != 17002 || p.Books[len(p.Books)-1].expValue() != 50 || p.itemCount(11490) != 0 {
+		p.mu.Unlock()
+		t.Fatalf("悟法心得: %d books", len(p.Books)-books)
+	}
+	p.mu.Unlock()
+	c.sendExt("ITEM_PTO.C_USE_ITEM", xym.Msg{"pos": zf.Pos, "type": itemRandomZfBook, "use_num": 3, "choose": 0, "usetype": 1})
+	c.until(t, "ETC_PTO.S_REWARD_MSG")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := int32(0)
+	for typ := zfBook0 + 1; typ <= zfBook0+8; typ++ {
+		n += p.itemCount(typ)
+	}
+	if n != 3 || p.itemCount(itemRandomZfBook) != 0 {
+		t.Fatalf("阵法书 %d", n)
+	}
+}

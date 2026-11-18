@@ -35,13 +35,7 @@ func init() {
 		}
 		s.SendExt("ETC_PTO.S_SEND_BAG_COUNT", xym.Msg{"type": t, "count": n})
 	})
-	Handle("CARD_FRAME_PTO.C_OPEN_FRAME_BAG", func(s *Session, _ *Player, _ xym.Msg) {
-		s.SendExt("CARD_FRAME_PTO.S_OPEN_FRAME_BAG", nil)
-	})
 	// 日常 / 主线任务（C_APPLY_DAILY、C_OPEN_MAIN_TASK）见 tasks.go。
-	Handle("TREE_PTO.C_EVENT_LIST", func(s *Session, _ *Player, _ xym.Msg) {
-		s.SendExt("TREE_PTO.S_EVENT_LIST", nil)
-	})
 
 	// 背包的道具 / 装备 / 法术书及穿戴见 h_bag.go；碎片（法术碎片、装备碎片、玄铁）还没有，回空表。
 
@@ -58,14 +52,17 @@ func init() {
 // pushAfterLogin：官方服在 S_LOGIN_SUC 之后主动推的数据（好友、图鉴与天将）。
 // S_SEND_HAS_DONGFU 只有已加入洞府才推：yes=0 会让客户端直接弹「开启洞府」（party_mgr.S_SEND_HAS_DONGFU，真机验证）。
 func (s *Session) pushAfterLogin() {
+	s.sendFrameBag(s.player)
 	s.sendFriends() // 好友、申请（h_friend.go）
 	s.sendApplies()
 	s.pushCardSets()
 	s.pushDongfuLogin() // 洞府职位与修为（dongfu.go）
+	s.pushEventList()   // 突发事件（events.go）
 }
 
 // onApplyPetList：全量卡牌。官方回 S_UPDATE_PET（详情）+ S_PET_LIST（列表页用的简表）。
 func onApplyPetList(s *Session, p *Player, _ xym.Msg) {
+	s.setHPPanel = p.lineupSetHP()
 	pets := p.sortedPets()
 	full := make([]xym.Msg, 0, len(pets))
 	brief := make([]xym.Msg, 0, len(pets))

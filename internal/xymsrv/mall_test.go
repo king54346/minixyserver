@@ -77,8 +77,16 @@ func TestRecruit(t *testing.T) {
 	for _, pet := range p.Pets {
 		cards += pet.TLAdd
 	}
-	if cards != len(starterPets)+12 || role.Cash != 150000-100000 || p.Mall.Free3Left != cashFreePerDay-1 || p.Mall.Cost3Left != cashPaidPerDay-10 {
+	if cards != len(starterPets)+12 || role.Cash != 150000-100000+500000 || p.Mall.Free3Left != cashFreePerDay-1 || p.Mall.Cost3Left != cashPaidPerDay-10 {
 		t.Fatalf("cards %d cash %d mall %+v", cards, role.Cash, p.Mall)
+	}
+	// 同名卡另给魂值 PetSoulPoint[星级]：魂值 = 抽到的同名卡（TLAdd）合计
+	var want int32
+	for _, pet := range p.Pets {
+		want += int32(pet.TLAdd) * petSoulPoint[gamedata.Pets[pet.Type].Star]
+	}
+	if role.SoulExp != want {
+		t.Fatalf("soul exp %d want %d", role.SoulExp, want)
 	}
 }
 

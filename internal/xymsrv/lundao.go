@@ -1,7 +1,9 @@
 package xymsrv
 
 import (
+	"encoding/json"
 	"fmt"
+
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -32,11 +34,15 @@ import (
 // 估计：只能挑战比自己靠前且相差不超过 5 名的；兑换次数每天刷新
 // （宝石、丹药 10 次，高级宝石 5 次，魂魄 1 次）；挑战动态（C_APPLY_STATE）保留最近 30 条。
 
+var (
+	ldDailyTimes       = 15
+	ldBuyGold    int32 = 10 // 用完后购买 1 次挑战的元宝
+)
+
 const (
-	ldDailyTimes   = 15
-	ldBuyGold      = 10 // 用完后购买 1 次挑战的元宝
-	ldFakeCount    = 100
+	ldFakeCount    = 3000 // 900001~903000：30 / 40 / 50 级组各 1000 个
 	ldFakeUIDBase  = 900001
+	ldFakePerGroup = 1000 // 每组假玩家数
 	ldChallengeGap = 5
 	ldKeepStates   = 30
 )
@@ -51,6 +57,18 @@ var ldScoreCfg = []struct {
 	{1000, [3]int32{41, 53, 68}}, {1500, [3]int32{39, 51, 66}}, {2100, [3]int32{30, 42, 57}}, {2800, [3]int32{29, 41, 56}},
 	{3600, [3]int32{27, 39, 54}}, {4500, [3]int32{18, 30, 45}}, {5500, [3]int32{17, 29, 44}}, {6500, [3]int32{15, 27, 42}},
 	{7600, [3]int32{6, 18, 33}}, {8800, [3]int32{5, 17, 32}}, {10000, [3]int32{3, 15, 30}},
+}
+
+// ldGroup 是人物等级对应的论道分组（≤30 / 31–40 / >40）。
+func ldGroup(grade int) int {
+	switch {
+	case grade <= 30:
+		return 30
+	case grade <= 40:
+		return 40
+	default:
+		return 50
+	}
 }
 
 func ldHourlyScore(grade, rank int) int32 {
@@ -126,8 +144,9 @@ type Ladder struct {
 	mu sync.Mutex
 	st store.Store
 
-	Ranks  []int32   `json:"ranks"`
-	States []LDState `json:"states,omitempty"`
+	Ranks  []int32         `json:"ranks,omitempty"`  // 旧版全服榜：仅用于首次迁移，迁移后清空
+	Groups map[int][]int32 `json:"groups,omitempty"` // 30 / 40 / 50 三个等级组各自的榜
+	States []LDState       `json:"states,omitempty"`
 
 	snaps map[int32]*ldFoe // 真实玩家阵容快照（不存档）
 }
@@ -155,16 +174,55 @@ type ldFoe struct {
 	DFIcon int32
 	Zf     battle.Formation // 阵法（zhenfa.go）
 	W      int              // 威望（战报 w2，prestigeOf；假对手为 0）
+	BaseW  int
+	VIP    int
 }
 
 func openLadder(st store.Store) *Ladder {
 	l := &Ladder{st: st, snaps: map[int32]*ldFoe{}}
-	loadGlobal(st, lundaoUID, l, "lundao")
-	if len(l.Ranks) == 0 {
-		for i := range ldFakeCount {
-			l.Ranks = append(l.Ranks, int32(ldFakeUIDBase+i))
+	loadGlobal(st, globalLundao, l)
+	if l.Groups == nil {
+		l.Groups = map[int][]int32{}
+	}
+	// 旧版是全服统一榜：首次启动时把假玩家按号段（900001~901000 / 901001~902000 / 902001~903000）
+	// 拆进 30 / 40 / 50 三组；真实玩家不迁移，等下次进论道时按当前等级 join 入组。
+	if len(l.Ranks) > 0 {
+		roles, err := st.LoadRoles()
+		if err != nil {
+			// Keep the legacy board on disk so its real player ranks can be migrated on retry.
+			return l
+		}
+		grades := make(map[int32]int, len(roles))
+		for _, ro := range roles {
+			grades[ro.UID] = ro.Grade
+		}
+		for _, uid := range l.Ranks {
+			if isFakeUID(uid) {
+				g := 30 + int(uid-ldFakeUIDBase)/ldFakePerGroup*10
+				l.Groups[g] = append(l.Groups[g], uid)
+				continue
+			}
+			// 真实玩家按原全服顺序、各自等级组入榜，保留原有相对位次。
+			if gr, ok := grades[uid]; ok {
+				l.Groups[ldGroup(gr)] = append(l.Groups[ldGroup(gr)], uid)
+			}
+		}
+		l.Ranks = nil
+	}
+	// 每组补齐 1000 个假玩家（老存档可能不足）。
+	for g := 30; g <= 50; g += 10 {
+		have := make(map[int32]bool, len(l.Groups[g]))
+		for _, uid := range l.Groups[g] {
+			have[uid] = true
+		}
+		base := int32(ldFakeUIDBase + (g-30)/10*ldFakePerGroup)
+		for i := 0; i < ldFakePerGroup; i++ {
+			if uid := base + int32(i); !have[uid] {
+				l.Groups[g] = append(l.Groups[g], uid)
+			}
 		}
 	}
+	saveGlobal(st, globalLundao, l)
 	return l
 }
 
@@ -172,30 +230,73 @@ func (l *Ladder) do(fn func() bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if fn() {
-		saveGlobal(l.st, lundaoUID, l, "lundao")
+		saveGlobal(l.st, globalLundao, l)
 	}
 }
 
-// rankOf 是 uid 的名次（1 起；不在榜上为 0）。调用方持锁。
-func (l *Ladder) rankOf(uid int32) int {
-	if i := slices.Index(l.Ranks, uid); i >= 0 {
+// rankOf 是 uid 在本等级组内的名次（1 起；不在本组榜上为 0）。调用方持锁。
+func (l *Ladder) rankOf(uid int32, grade int) int {
+	if i := slices.Index(l.Groups[ldGroup(grade)], uid); i >= 0 {
 		return i + 1
 	}
 	return 0
 }
 
-// join 让 uid 上榜（排在榜尾），返回名次。
-func (l *Ladder) join(uid int32) int {
+// join 让 uid 进本等级组的榜尾，返回组内名次。等级跨组时从旧组移除（按当前等级分组）。
+func (l *Ladder) join(uid int32, grade int) int {
+	g := ldGroup(grade)
 	var r int
 	l.do(func() bool {
-		if r = l.rankOf(uid); r > 0 {
-			return false
+		dirty := false
+		for gk, ranks := range l.Groups {
+			if gk == g {
+				continue
+			}
+			if i := slices.Index(ranks, uid); i >= 0 {
+				l.Groups[gk] = append(ranks[:i:i], ranks[i+1:]...)
+				dirty = true
+			}
 		}
-		l.Ranks = append(l.Ranks, uid)
-		r = len(l.Ranks)
+		if i := slices.Index(l.Groups[g], uid); i >= 0 {
+			r = i + 1
+			return dirty
+		}
+		l.Groups[g] = append(l.Groups[g], uid)
+		r = len(l.Groups[g])
 		return true
 	})
 	return r
+}
+
+// ldReband moves players who crossed a grade band to the tail of their new band.
+// The caller holds the ladder lock. Existing ranks retain their relative order.
+func (srv *Server) ldReband() bool {
+	groups := srv.ladder.Groups
+	moved := map[int][]int32{}
+	changed := false
+	for _, g := range []int{30, 40, 50} {
+		ranks := groups[g]
+		groups[g] = slices.DeleteFunc(ranks, func(uid int32) bool {
+			if isFakeUID(uid) {
+				return false
+			}
+			if ro := srv.roles.Get(uid); ro != nil && ldGroup(ro.Grade) != g {
+				dest := ldGroup(ro.Grade)
+				moved[dest] = append(moved[dest], uid)
+				changed = true
+				return true
+			}
+			return false
+		})
+	}
+	for g, uids := range moved {
+		for _, uid := range uids {
+			if !slices.Contains(groups[g], uid) {
+				groups[g] = append(groups[g], uid)
+			}
+		}
+	}
+	return changed
 }
 
 func isFakeUID(uid int32) bool { return uid >= ldFakeUIDBase && uid < ldFakeUIDBase+ldFakeCount }
@@ -206,30 +307,27 @@ var (
 		"无极", "长生", "问道", "逍遥", "听澜", "望舒", "知秋", "寻梅"}
 )
 
-// fakeFoe 生成第 i 个（0 起，越小越强）假玩家：名字、等级、阵容都由 i 决定（种子固定）。
+// fakeFoe 生成第 i 个（0 起）假玩家：每 1000 个一组，依次是 30 / 40 / 50 级组，组内序号越小越强。
+// 名字由三段拼成（20×20×20），i < 8000 时不重复。
 func fakeFoe(i int) *ldFoe {
 	rng := rand.New(rand.NewPCG(uint64(i)+7919, 104729))
 	f := &ldFoe{UID: int32(ldFakeUIDBase + i)}
-	f.Name = string(ldNamesA[i%len(ldNamesA)]) + string(ldNamesA[(i*7+3)%len(ldNamesA)]) + ldNamesB[(i/2)%len(ldNamesB)]
-	switch {
-	case i < 50:
-		f.Grade = 50
-	case i < 80:
-		f.Grade = 45
-	default:
-		f.Grade = 40
-	}
-	petGrade := max(20, min(100, f.Grade*2)*(110-i)/110)
-	tal := max(0, 9-i/10) // 神通等级下标：榜首满级，往后逐级递减
+	na := len(ldNamesA)
+	f.Name = string(ldNamesA[i%na]) + string(ldNamesA[(i/na)%na]) + ldNamesB[(i/(na*na))%len(ldNamesB)]
+	group := i / ldFakePerGroup // 0 = 30 级组、1 = 40 级组、2 = 50 级组
+	f.Grade = 30 + group*10
+	ri := i % ldFakePerGroup // 组内序号 0..999：0 是组内榜首
+	petGrade := max(20, min(100, f.Grade*2)*(1100-ri)/1100)
+	tal := max(0, 9-ri/111) // 神通等级：组内榜首满级，往后逐级递减到 0
 	w := [5]int{0, 0, 10, 40, 50}
 	switch {
-	case i < 20:
+	case ri < 200:
 		w = [5]int{0, 0, 0, 10, 90}
-	case i >= 60:
+	case ri >= 600:
 		w = [5]int{0, 5, 35, 45, 15}
 	}
 	n := 8
-	if i >= 50 {
+	if ri >= 500 {
 		n = 6
 	}
 	used := map[int32]bool{}
@@ -278,6 +376,17 @@ func fakeFoeCached(uid int32) *ldFoe {
 
 // realFoe 是真实玩家 uid 的当前出战阵容（敌方站位 101 起）。me 是本请求自己的存档（已持锁）。
 func (srv *Server) realFoe(uid int32, me *Player) *ldFoe {
+	return srv.realFoeCore(uid, me, false)
+}
+
+// realFoeLocked 同 realFoe，但**调用方已持洞府锁**：core 尾部查 uid 所在洞府时，
+// 普通版走 dongfuOf（内部 Dongfus.do 会再取一次洞府锁——互斥锁不可重入，直接死锁，
+// 破阵 dfBattleTeamOf 就这么卡死过整个服务端），这里改为锁内直接读。
+func (srv *Server) realFoeLocked(uid int32, me *Player) *ldFoe {
+	return srv.realFoeCore(uid, me, true)
+}
+
+func (srv *Server) realFoeCore(uid int32, me *Player, dfLocked bool) *ldFoe {
 	ro := srv.roles.Get(uid)
 	if ro == nil {
 		return nil
@@ -286,27 +395,44 @@ func (srv *Server) realFoe(uid int32, me *Player) *ldFoe {
 	var p *Player
 	if me != nil && me.UID == uid {
 		p = me
-	} else if q, err := srv.players.Get(uid); err == nil && q.mu.TryLock() {
-		defer q.mu.Unlock()
-		p = q
-		if p.role == nil {
+	} else if q, err := srv.players.Get(uid); err == nil {
+		if q.mu.TryLock() {
+			defer q.mu.Unlock()
+			p = q
+		} else if data, err := srv.players.st.LoadPlayer(uid); err == nil {
+			// 对手正忙且重启后没有快照时，读取独立持久快照，绝不无锁访问共享Player。
+			copy := &Player{st: srv.players.st}
+			if json.Unmarshal(data, copy) == nil {
+				p = copy
+			}
+		}
+		if p != nil {
 			p.role = ro
 		}
 	}
 	if p == nil { // 正被占用：用快照
 		srv.ladder.mu.Lock()
-		defer srv.ladder.mu.Unlock()
-		return srv.ladder.snaps[uid]
+		old := srv.ladder.snaps[uid]
+		srv.ladder.mu.Unlock()
+		if old == nil {
+			return nil
+		}
+		fresh := *old // cached team is immutable; current role metadata never comes from it
+		fresh.Name, fresh.Grade, fresh.Icon = ro.Name, ro.Grade, int32(ro.Icon)
+		gatePoints := max(0, old.BaseW-prestigeOf(&Role{Grade: old.Grade, VIP: old.VIP}, nil))
+		fresh.W = srv.prestigeOf(ro, nil) + gatePoints
+		return &fresh
 	}
 	team, pets := p.dyTeam(nil)
 	for _, x := range team {
 		x.Pos += 100
 	}
-	f.Team, f.Leader, f.FP, f.Zf, f.W = team, p.leaderSkill(), p.teamCap(pets), p.formation(), prestigeOf(ro.Grade, p)
+	f.Team, f.Leader, f.FP, f.Zf, f.W = team, p.leaderSkill(), p.teamCap(pets), p.formation(), srv.prestigeOf(ro, p)
+	f.BaseW, f.VIP = prestigeOf(ro, p), ro.VIP
 	for k, x := range team[:min(2, len(team))] {
 		f.Faces[k] = x.Icon
 	}
-	if df, _ := srv.dongfuOf(uid); df != nil {
+	if df, _ := srv.dongfuFoeOf(uid, dfLocked); df != nil {
 		f.DFName, f.DFIcon = df.Name, df.Icon
 	}
 	srv.ladder.mu.Lock()
@@ -351,6 +477,15 @@ func (srv *Server) dongfuOf(uid int32) (*Dongfu, *DFMember) {
 	return df, me
 }
 
+// dongfuFoeOf 是 dongfuOf 的锁感知版：locked=true 表示调用方已持洞府锁，
+// 此时绝不能再走 dongfu.do（互斥锁不可重入，会自锁死），直接读 d.of。
+func (srv *Server) dongfuFoeOf(uid int32, locked bool) (*Dongfu, *DFMember) {
+	if locked {
+		return srv.dongfu.of(uid)
+	}
+	return srv.dongfuOf(uid)
+}
+
 // settleScore 按当前名次结算到现在为止的整点积分。
 func (s *Session) ldSettle(p *Player, rank int) {
 	l := p.lundao()
@@ -381,7 +516,7 @@ func init() {
 
 func (s *Session) ldScore(p *Player) {
 	var rank int
-	s.srv.ladder.do(func() bool { rank = s.srv.ladder.rankOf(s.role.UID); return false })
+	s.srv.ladder.do(func() bool { rank = s.srv.ladder.rankOf(s.role.UID, s.role.Grade); return false })
 	s.ldSettle(p, rank)
 	p.saveLog(s)
 	s.SendExt("LUNDAO_PTO.S_SEND_SCORE", xym.Msg{"score": p.lundao().Score})
@@ -390,11 +525,16 @@ func (s *Session) ldScore(p *Player) {
 // ldOpenMsg 编 S_OPEN_LUNDAO：前 10 名 + 自己上 5 名到下 4 名。
 func (s *Session) ldOpenMsg(p *Player) xym.Msg {
 	lad := s.srv.ladder
+	g := ldGroup(s.role.Grade)
 	var ranks []int32
 	var my int
 	lad.do(func() bool {
-		ranks, my = slices.Clone(lad.Ranks), lad.rankOf(s.role.UID)
-		return false
+		changed := s.srv.ldReband()
+		ranks = slices.Clone(lad.Groups[g])
+		if i := slices.Index(ranks, s.role.UID); i >= 0 {
+			my = i + 1
+		}
+		return changed
 	})
 	var show []int
 	for r := 1; r <= min(10, len(ranks)); r++ {
@@ -404,9 +544,11 @@ func (s *Session) ldOpenMsg(p *Player) xym.Msg {
 		show = append(show, r)
 	}
 	list := []xym.Msg{}
+	s.ldShown = make(map[int]int32, len(show))
 	for _, r := range show {
-		if f := s.srv.ldFoe(ranks[r-1], p); f != nil {
+		if f := s.srv.ldFoe(ranks[r-1], p); f != nil && ldGroup(f.Grade) == g {
 			list = append(list, f.msg(r))
+			s.ldShown[r] = f.UID
 		}
 	}
 	l := p.lundao()
@@ -414,32 +556,61 @@ func (s *Session) ldOpenMsg(p *Player) xym.Msg {
 }
 
 func (s *Session) ldOpen(p *Player) {
-	rank := s.srv.ladder.join(s.role.UID)
+	rank := s.srv.ladder.join(s.role.UID, s.role.Grade)
+	msg := s.ldOpenMsg(p)
+	for r, uid := range s.ldShown {
+		if uid == s.role.UID {
+			rank = r
+			break
+		}
+	}
 	s.ldSettle(p, rank)
 	p.saveLog(s)
-	s.SendExt("LUNDAO_PTO.S_OPEN_LUNDAO", s.ldOpenMsg(p))
+	msg["score"], msg["times"] = p.lundao().Score, p.lundao().Times
+	s.SendExt("LUNDAO_PTO.S_OPEN_LUNDAO", msg)
 	s.SendExt("LUNDAO_PTO.S_SEND_TIMES", xym.Msg{"times": p.lundao().Times})
 }
 
 func onFightLundao(s *Session, p *Player, m xym.Msg) {
 	target := int(m["rank"].(int64))
 	lad := s.srv.ladder
-	my := lad.join(s.role.UID)
-	s.ldSettle(p, my)
+	lad.join(s.role.UID, s.role.Grade)
+	var my int
 	l := p.lundao()
 	var foeUID int32
+	shownUID := s.ldShown[target]
+	g := ldGroup(s.role.Grade)
 	lad.do(func() bool {
-		if target >= 1 && target <= len(lad.Ranks) {
-			foeUID = lad.Ranks[target-1]
+		ranks := lad.Groups[g]
+		if shownUID == 0 && target >= 1 && target <= len(ranks) {
+			shownUID = ranks[target-1]
 		}
-		return false
+		changed := s.srv.ldReband()
+		ranks = lad.Groups[g]
+		my = slices.Index(ranks, s.role.UID) + 1
+		if target >= 1 && target <= len(ranks) {
+			foeUID = ranks[target-1]
+		}
+		return changed
 	})
+	s.ldSettle(p, my)
 	fail := func(msg string) {
 		s.sendMsg(msg)
 		s.SendExt("LUNDAO_PTO.S_OPEN_LUNDAO", s.ldOpenMsg(p))
 		s.SendExt("LUNDAO_PTO.S_SEND_TIMES", xym.Msg{"times": l.Times})
 	}
+	// 榜首可以挑战界面展示的其他前十名，计入任务，但不交换名次。
+	topChallenge := my == 1 && target >= 2 && target <= 10
 	switch {
+	case shownUID != foeUID:
+		fail("论道排名已变化，请刷新后重新选择对手。")
+		return
+	case foeUID == 0 || foeUID == s.role.UID || (!topChallenge && target >= my):
+		fail("只能挑战排名比你靠前的对手。榜首可挑战第 2 至 10 名。")
+		return
+	case !topChallenge && my-target > ldChallengeGap:
+		fail("只能挑战排名在你之前 5 名以内的对手。")
+		return
 	case l.Times <= 0:
 		text := fmt.Sprintf("今日的论道挑战次数已经用完了。#r花费#G%d元宝#n购买1次挑战次数并开始挑战？", ldBuyGold)
 		s.askBox(text, []string{"购买", "关闭"}, func(opt int) {
@@ -450,33 +621,32 @@ func onFightLundao(s *Session, p *Player, m xym.Msg) {
 			onFightLundao(s, p, m)
 		})
 		return
-	case foeUID == 0 || foeUID == s.role.UID || target >= my:
-		fail("只能挑战排名比你靠前的对手。")
-		return
-	case my-target > ldChallengeGap:
-		fail("只能挑战排名在你之前 5 名以内的对手。")
-		return
 	}
 	foe := s.srv.ldFoe(foeUID, p)
 	team1, _ := p.dyTeam(nil)
+	if foe != nil && ldGroup(foe.Grade) != g {
+		fail("对手已升入其他等级组，请刷新后重新选择。")
+		return
+	}
 	if foe == nil || len(foe.Team) == 0 || len(team1) == 0 {
 		fail("对方正忙，请稍后再试。")
 		return
 	}
 	team2 := battle.CloneTeam(foe.Team)
 	r1, r2 := battle.CloneTeam(team1), battle.CloneTeam(team2)
-	res := s.simulate(p, team1, team2, [2]int32{p.leaderSkill(), foe.Leader}, foe.Zf, s.actRng())
+	res := s.simulateVersus(p, team1, team2, [2]int32{p.leaderSkill(), foe.Leader}, foe.Zf, foe.W, s.actRng())
 	rid := "lundao:" + dfNum(int32(recordSeq.Add(1)))
 	s.fightRecordW(rid, foe.Name, foe.Grade, foe.W, r1, r2, res.Record)
 	l.Times--
 	p.track(evLundao, 1)
-	if res.Win {
+	if res.Win && !topChallenge {
 		lad.do(func() bool {
-			a, b := lad.rankOf(s.role.UID), lad.rankOf(foeUID)
+			a, b := lad.rankOf(s.role.UID, s.role.Grade), lad.rankOf(foeUID, foe.Grade)
 			if a == 0 || b == 0 || b >= a {
 				return false
 			}
-			lad.Ranks[a-1], lad.Ranks[b-1] = foeUID, s.role.UID
+			ranks := lad.Groups[g]
+			ranks[a-1], ranks[b-1] = foeUID, s.role.UID
 			lad.States = append(lad.States, LDState{UID: s.role.UID, Time: nowUnix(), Attacker: s.role.Name, Target: foe.Name, Pos: b})
 			if n := len(lad.States); n > ldKeepStates {
 				lad.States = lad.States[n-ldKeepStates:]
@@ -486,6 +656,12 @@ func onFightLundao(s *Session, p *Player, m xym.Msg) {
 		})
 	}
 	p.saveLog(s)
+	// 论道前十的胜场阵容收进取经人阵容池：挑战胜利（赢后名次 ≤ 10）用自己的阵容，挑战失败时守住的前十名用对方的
+	if res.Win && my <= qjPoolTop {
+		s.srv.qjPoolAdd(s.role.UID, s.role.Name, s.role.Grade, s.role.Icon, r1)
+	} else if !res.Win && target <= qjPoolTop && !isFakeUID(foeUID) {
+		s.srv.qjPoolAdd(foeUID, foe.Name, foe.Grade, int(foe.Icon), r2)
+	}
 	if res.Win {
 		var faces [2]int32
 		for k, x := range r1[:min(2, len(r1))] {
@@ -513,19 +689,49 @@ func onLundaoTop(s *Session, p *Player, m xym.Msg) {
 	typ := int(m["type"].(int64))
 	lad := s.srv.ladder
 	var ranks []int32
-	lad.do(func() bool { ranks = slices.Clone(lad.Ranks); return false })
+	lad.do(func() bool {
+		ranks = slices.Clone(lad.Groups[typ])
+		for _, g := range []int{30, 40, 50} {
+			if g == typ {
+				continue
+			}
+			for _, uid := range lad.Groups[g] {
+				if !isFakeUID(uid) {
+					ranks = append(ranks, uid)
+				}
+			}
+		}
+		return false
+	})
 	list := []xym.Msg{}
-	for i, uid := range ranks {
+	seen := map[int32]bool{}
+	for _, uid := range ranks {
 		if len(list) >= 10 {
 			break
 		}
-		f := s.srv.ldFoe(uid, p)
-		if f == nil || f.Grade > typ || f.Grade <= typ-10 && typ > 30 {
+		if seen[uid] {
 			continue
 		}
-		list = append(list, f.msg(i+1))
+		seen[uid] = true
+		// Filter against the authoritative role even when the player's battle
+		// snapshot is busy or from the previous level band.
+		if !isFakeUID(uid) {
+			ro := s.srv.roles.Get(uid)
+			if ro == nil || !ldInBand(ro.Grade, typ) {
+				continue
+			}
+		}
+		f := s.srv.ldFoe(uid, p)
+		if f == nil || !ldInBand(f.Grade, typ) {
+			continue
+		}
+		list = append(list, f.msg(len(list)+1))
 	}
 	s.SendExt("LUNDAO_PTO.S_OPEN_TOP", xym.Msg{"type": typ, "list": list})
+}
+
+func ldInBand(grade, band int) bool {
+	return (band == 30 || band == 40 || band == 50) && grade <= band && (band == 30 || grade > band-10)
 }
 
 func onLundaoState(s *Session, p *Player, m xym.Msg) {

@@ -75,6 +75,7 @@ const gateNoLimit = 255
 
 // sendGateList 回 S_GATE_LIST（tickets 是扫荡券数，sweep.go）。
 func (s *Session) sendGateList(p *Player, task, typ int) {
+	s.gateViewMode = typ
 	var list []xym.Msg
 	if p.taskOpen(typ, task) {
 		for _, gid := range gamedata.TaskGates[task] {
@@ -179,14 +180,26 @@ func (p *Player) playerTeamWith(m xym.Msg, helper *helperCard) ([]*battle.Fighte
 func (p *Player) fighterOf(pet *Pet, pos int) *battle.Fighter {
 	pi := gamedata.Pets[pet.Type]
 	fp := p.fightPos(pet.BagPos)
-	att, hp := p.petStats(pet)
+	att, hp := p.petStatsBeforeSetHP(pet)
+	setHP := p.petSetHP(pet)
+	hp += setHP
 	tals, tj := p.activeTalents(pet, pi) // 只带已开启的神通（境界与人物等级，pet_talent.go）
 	setTals, gems := p.gearExtras(fp)    // 套装神通、宝石（inlay.go）
+	setTals = slices.DeleteFunc(setTals, func(id int32) bool {
+		race, _ := battle.RaceHPSet(id)
+		return race != 0 // 气血套装已经计入面板，开场不重复发动。
+	})
 	tals = append(slices.Clone(tals), setTals...)
 	f := &battle.Fighter{Gems: gems, SkillFull: pet.talentsFull(pi), ID: pet.NpcNum, Pos: pos, Name: pi.Name, Att: att,
-		HP: hp, MaxHP: hp, Speed: p.petSpeed(pet), Icon: pet.Type, Race: pi.Race, Grade: pet.Grade,
+		HP: hp, MaxHP: hp, PanelSetHP: setHP, Speed: p.petSpeed(pet), Icon: pet.Type, Race: pi.Race, Grade: pet.Grade,
 		Talents: tals, TalentTJ: tj, Magic: pi.Magic, MagicLv: pet.magicLv(),
 		Books: p.wornBooks(fp), BookRate: p.wornBookRates(fp), Suits: p.wornSuits(fp), BookTJ: p.wornBookTJ(fp), BookJX: p.wornBookJX(fp)}
+	for _, frame := range p.CardFrames {
+		if frame.Using == pet.Type && frameAlive(frame, time.Now().Unix()) {
+			f.FrameType = frame.Type
+			break
+		}
+	}
 	p.applyXiuwei(f) // 洞府修为（dongfu_build.go）
 	return f
 }
@@ -302,7 +315,7 @@ func (s *Session) winGate(p *Player, gid, typ int, mode gamedata.GateMode, pets 
 	role, err := s.srv.roles.Update(s.role.UID, func(ro *Role) bool {
 		ro.TPoint -= mode.Cost
 		ro.Cash += int32(rw.Cash())
-		ro.AddExp(int32(rw.MExp()))
+		ro.GainExp(int32(rw.MExp()))
 		return true
 	})
 	if err != nil {
@@ -313,7 +326,7 @@ func (s *Session) winGate(p *Player, gid, typ int, mode gamedata.GateMode, pets 
 	pexp := int32(rw.PExp())
 	full := make([]xym.Msg, 0, len(pets))
 	for _, pet := range pets {
-		pet.addExp(pexp, role.PetCap())
+		s.petGainExp(p, pet, pexp, role.PetCap())
 		full = append(full, p.petFull(pet))
 	}
 	p.clearGate(typ, gid)
@@ -324,6 +337,7 @@ func (s *Session) winGate(p *Player, gid, typ int, mode gamedata.GateMode, pets 
 	s.SendExt("ETC_PTO.S_ATTR_UPDATE", xym.Msg{"attr": []xym.Msg{
 		{"name": "tpoint", "val": role.TPoint}, {"name": "grade", "val": role.Grade},
 		{"name": "exp", "val": role.Exp}, {"name": "next_exp", "val": nextExp(role.Grade)},
+		{"name": "xiuwei", "val": role.Xiuwei}, {"name": "xgrade", "val": role.XGrade},
 		{"name": "cash", "val": role.Cash},
 	}})
 	s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0, "pets": full})

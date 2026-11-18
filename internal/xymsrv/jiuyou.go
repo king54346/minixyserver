@@ -176,7 +176,7 @@ type jyEntry struct {
 	Team   []xym.Msg `json:"team,omitempty"` // S_OPENING_BATTLE_TEAM_VIEW.tmp_team
 }
 
-// Jiuyou 是全服九幽排行（存档位 jiuyouUID）。
+// Jiuyou 是全服九幽排行（全服数据 globalJiuyou）。
 type Jiuyou struct {
 	mu sync.Mutex
 	st store.Store
@@ -187,7 +187,7 @@ type Jiuyou struct {
 
 func openJiuyou(st store.Store) *Jiuyou {
 	j := &Jiuyou{st: st}
-	loadGlobal(st, jiuyouUID, j, "jiuyou")
+	loadGlobal(st, globalJiuyou, j)
 	return j
 }
 
@@ -211,7 +211,7 @@ func (j *Jiuyou) do(fn func() bool) []swMail {
 		dirty = true
 	}
 	if dirty {
-		saveGlobal(j.st, jiuyouUID, j, "jiuyou")
+		saveGlobal(j.st, globalJiuyou, j)
 	}
 	return mails
 }

@@ -1,11 +1,14 @@
 package xymsrv
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"turnrpg/internal/gamedata"
 	"turnrpg/internal/store"
@@ -15,51 +18,66 @@ import (
 // Player 是一个角色的玩法存档（整体存成 JSON，见 store）。同一个 *Player 由 Players 缓存，
 // 顶号时新旧会话共用；handler 在 mu 下执行（见 Session.handleExt）。
 type Player struct {
-	mu sync.Mutex
-	st store.Store
+	PetExpPool     int32 `json:"pet_exp_pool,omitempty"`
+	mu             sync.Mutex
+	st             store.Store
+	savedDigest    [32]byte // guarded by mu; records only a successful durable save
+	hasSavedDigest bool
+	publicTeam     atomic.Pointer[teamSummary] // last completed public lineup, not persisted
+	examRank       atomic.Pointer[examRankScore]
+	opsDirty       bool
 
-	UID          int32           `json:"uid"`
-	NextNpc      int32           `json:"next_npc"` // 下一张卡的 npcnum（与官方一样从 10001 起）
-	Pets         []*Pet          `json:"pets"`
-	FightNo      int             `json:"fno"` // 出战阵容号
-	Lineups      []*Lineup       `json:"lineups"`
-	Items        []*Item         `json:"items"`
-	Prog         [2]*Progress    `json:"progress"` // 闯关进度：[0] 普通 [1] 精英
-	Mall         *Mall           `json:"mall,omitempty"`
-	Suits        []*Suit         `json:"suits,omitempty"`
-	Books        []*Book         `json:"books,omitempty"`
-	NextItemNum  int32           `json:"next_itemnum,omitempty"`
-	Souls        map[int32]int32 `json:"souls,omitempty"`
-	Irons        map[int]int32   `json:"irons,omitempty"`         // 装备碎片：装备类型 -> 数量
-	BookParts    map[int32]int32 `json:"book_parts,omitempty"`    // 法术碎片：法术号 -> 数量
-	TianJiang    *TianJiangState `json:"tianjiang,omitempty"`     // 天将阶级（tianjiang.go）
-	Dangyao      *DangyaoState   `json:"dangyao,omitempty"`       // 荡妖 / 功德（dangyao.go）
-	Shilian      *ShilianState   `json:"shilian,omitempty"`       // 试炼（shilian.go）
-	Joke         *JokeState      `json:"joke,omitempty"`          // 解忧（jieyou.go）
-	Wish         *WishState      `json:"wish,omitempty"`          // 缘魂（wish.go）
-	Mijing       *MijingState    `json:"mijing,omitempty"`        // 秘境（mijing.go）
-	Tree         *TreeState      `json:"tree,omitempty"`          // 摇钱树（tree.go）
-	Duobao       *DuobaoState    `json:"duobao,omitempty"`        // 宝卷 / 夺宝（duobao.go）
-	Turntable    *TurntableState `json:"turntable,omitempty"`     // 奇缘幻境（turntable.go）
-	Xianling     *XianlingState  `json:"xianling,omitempty"`      // 仙灵店铺（xianling.go）
-	Honglu       *HongluState    `json:"honglu,omitempty"`        // 烘炉（alchemy.go）
-	Energy       *EnergyState    `json:"energy,omitempty"`        // 体力 / 活力回复与购买（energy.go）
-	LineupBuys   int             `json:"lineup_buys,omitempty"`   // 花元宝买的额外阵容数（lineups.go）
-	Lianshen     *LianshenState  `json:"lianshen,omitempty"`      // 每日免费炼神（inlay.go）
-	SweepTickets int             `json:"sweep_tickets,omitempty"` // 扫荡券（sweep.go）
-	GoldSpent    int64           `json:"gold_spent,omitempty"`    // 还没凑满 100 的已花元宝
-	Yuanshen     int             `json:"yuanshen,omitempty"`      // 元神（huaxing.go）
-	HuaxingTimes map[int32]int   `json:"huaxing_times,omitempty"` // 各护法已化形次数
-	AutoYuanshen []int32         `json:"auto_yuanshen,omitempty"` // 勾选了自动转元神的五星护法
-	Tasks        *TaskState      `json:"tasks,omitempty"`         // 日常活跃度 / 主线任务（tasks.go）
-	Lundao       *LundaoState    `json:"lundao,omitempty"`        // 论道积分 / 次数 / 兑换（lundao.go）
-	Jiuyou       *JiuyouState    `json:"jiuyou,omitempty"`        // 九幽试炼次数 / 商店（jiuyou.go）
-	Xiuxing      *XiuxingState   `json:"xiuxing,omitempty"`       // 修行（xiuxing.go）
-	Zhenfa       *ZhenfaState    `json:"zhenfa,omitempty"`        // 阵法（zhenfa.go）
-	DF           *DFPlayer       `json:"df,omitempty"`            // 洞府个人修为 / 灵气 / 建设任务（dongfu_build.go）
-	BagLimit     [4]int          `json:"bag_limit"`
-	BagBuys      [4]int          `json:"bag_buys,omitempty"`    // 装备 / 法术背包已花元宝扩充的次数（价格 ×3 递增）
-	HelperUsed   map[int32]int64 `json:"helper_used,omitempty"` // 援助：借用过的玩家 -> 借用时刻（30 分钟冷却，helper.go）
+	UID          int32              `json:"uid"`
+	NextNpc      int32              `json:"next_npc"` // 下一张卡的 npcnum（与官方一样从 10001 起）
+	Pets         []*Pet             `json:"pets"`
+	FightNo      int                `json:"fno"` // 出战阵容号
+	Lineups      []*Lineup          `json:"lineups"`
+	Items        []*Item            `json:"items"`
+	Prog         [2]*Progress       `json:"progress"` // 闯关进度：[0] 普通 [1] 精英
+	Mall         *Mall              `json:"mall,omitempty"`
+	Suits        []*Suit            `json:"suits,omitempty"`
+	Books        []*Book            `json:"books,omitempty"`
+	CardFrames   []CardFrame        `json:"card_frames,omitempty"`
+	FrameSeq     int32              `json:"frame_seq,omitempty"`
+	NextItemNum  int32              `json:"next_itemnum,omitempty"`
+	Souls        map[int32]int32    `json:"souls,omitempty"`
+	Irons        map[int]int32      `json:"irons,omitempty"`         // 装备碎片：装备类型 -> 数量
+	BookParts    map[int32]int32    `json:"book_parts,omitempty"`    // 法术碎片：法术号 -> 数量
+	TianJiang    *TianJiangState    `json:"tianjiang,omitempty"`     // 天将阶级（tianjiang.go）
+	Dangyao      *DangyaoState      `json:"dangyao,omitempty"`       // 荡妖 / 功德（dangyao.go）
+	Shilian      *ShilianState      `json:"shilian,omitempty"`       // 试炼（shilian.go）
+	Joke         *JokeState         `json:"joke,omitempty"`          // 解忧（jieyou.go）
+	Wish         *WishState         `json:"wish,omitempty"`          // 缘魂（wish.go）
+	Mijing       *MijingState       `json:"mijing,omitempty"`        // 秘境（mijing.go）
+	Tree         *TreeState         `json:"tree,omitempty"`          // 摇钱树（tree.go）
+	Duobao       *DuobaoState       `json:"duobao,omitempty"`        // 宝卷 / 夺宝（duobao.go）
+	Turntable    *TurntableState    `json:"turntable,omitempty"`     // 奇缘幻境（turntable.go）
+	Xianling     *XianlingState     `json:"xianling,omitempty"`      // 仙灵店铺（xianling.go）
+	Honglu       *HongluState       `json:"honglu,omitempty"`        // 烘炉（alchemy.go）
+	Energy       *EnergyState       `json:"energy,omitempty"`        // 体力 / 活力回复与购买（energy.go）
+	LineupBuys   int                `json:"lineup_buys,omitempty"`   // 花元宝买的额外阵容数（lineups.go）
+	Lianshen     *LianshenState     `json:"lianshen,omitempty"`      // 每日免费炼神（inlay.go）
+	SweepTickets int                `json:"sweep_tickets,omitempty"` // 扫荡券（sweep.go）
+	GoldSpent    int64              `json:"gold_spent,omitempty"`    // 还没凑满 100 的已花元宝
+	Yuanshen     int                `json:"yuanshen,omitempty"`      // 元神（huaxing.go）
+	HuaxingTimes map[int32]int      `json:"huaxing_times,omitempty"` // 各护法已化形次数
+	AutoYuanshen []int32            `json:"auto_yuanshen,omitempty"` // 勾选了自动转元神的五星护法
+	OwnedHistory map[int32]bool     `json:"owned_history,omitempty"` // 曾获得过的护法类型，保留旧存档兼容（pet_talent.go）
+	OwnedCopies  map[int32]int      `json:"owned_copies,omitempty"`  // 历史获得张数，含本体；融魂、飞升不清除
+	MeltedCopies map[int32]int      `json:"melted_copies,omitempty"` // 手动融魂时保留的同名 +N，再次获得本体时恢复
+	Tasks        *TaskState         `json:"tasks,omitempty"`         // 日常活跃度 / 主线任务（tasks.go）
+	OpsDays      map[string]*OpsDay `json:"ops_days,omitempty"`      // Server-observed login/activity, retained for 31 days.
+	Lundao       *LundaoState       `json:"lundao,omitempty"`        // 论道积分 / 次数 / 兑换（lundao.go）
+	Jiuyou       *JiuyouState       `json:"jiuyou,omitempty"`        // 九幽试炼次数 / 商店（jiuyou.go）
+	Xiuxing      *XiuxingState      `json:"xiuxing,omitempty"`       // 修行（xiuxing.go）
+	Zhenfa       *ZhenfaState       `json:"zhenfa,omitempty"`        // 阵法（zhenfa.go）
+	DF           *DFPlayer          `json:"df,omitempty"`            // 洞府个人修为 / 灵气 / 建设任务（dongfu_build.go）
+	Exam         *ExamState         `json:"exam,omitempty"`          // 科举答题（exam.go）
+	Liexi        *LiexiState        `json:"liexi,omitempty"`         // 时空裂隙（liexi.go）
+	Qujing       *QujingState       `json:"qujing,omitempty"`        // 西天取经（qujing.go）
+	BagLimit     [4]int             `json:"bag_limit"`
+	BagBuys      [4]int             `json:"bag_buys,omitempty"`    // 装备 / 法术背包已花元宝扩充的次数（价格 ×3 递增）
+	HelperUsed   map[int32]int64    `json:"helper_used,omitempty"` // 援助：借用过的玩家 -> 借用时刻（30 分钟冷却，helper.go）
 
 	role *Role // 进游戏时设置（人物等级等；不存档）
 	// helperNames：本场战斗借来的援护（援助护法）的名字，算缘分时当作在阵上（playerTeamWith 设置，打完清掉；不存档）
@@ -164,26 +182,78 @@ func (p *Player) clearGate(typ, gid int) (taskDone bool) {
 }
 
 type Pet struct {
-	NpcNum    int32  `json:"npcnum"`
-	Type      int32  `json:"type"`
-	Grade     int    `json:"grade"`
-	Exp       int32  `json:"exp"`
-	BagPos    int    `json:"bag_pos"`
-	SoulGrade int    `json:"soul_grade,omitempty"`
-	Locked    bool   `json:"locked,omitempty"`
-	TalGrade  [3]int `json:"tlgrade,omitempty"`     // 三个神通槽的等级，0 按 1 算（S_UPDATE_PET tlgrade1-3）
-	MagicLv   int    `json:"magic_lv,omitempty"`    // 天生法术等级，0 按 1 算（tal_magic_lev）
-	MagicExp  int32  `json:"magic_exp,omitempty"`   // 天生法术本级经验（tal_magic_exp）
-	TLPoint   int    `json:"tlpoint,omitempty"`     // 可用神通点（境界提升、并入同名卡获得，升神通消耗；pet_talent.go）
-	TLAdd     int    `json:"tlpoint_add,omitempty"` // 已并入的同名卡张数（S_UPDATE_PET.tlpoint_add）
-	ExtOn     bool   `json:"ext_on,omitempty"`      // 第四神通已激活（disishentong.go）
-	ExtGrade  [3]int `json:"ext_grade,omitempty"`   // 第四神通三个候选的等级
-	ExtIdx    int    `json:"ext_idx,omitempty"`     // 选中的候选（1-3，0 未选）
-	AttAdd    int    `json:"attadd,omitempty"`      // 培养：吃过的战力丹次数，每次 +1 攻击（pet_point.go）
-	HPAdd     int    `json:"hpadd,omitempty"`       // 培养：吃过的气血丹次数，每次 +4 生命
 	// 修行结缘 / 同修（xiuxing.go）：Combine 是结缘得到的人物缘（护法的 extend_relate），Together 是其中已同修进阶的
-	Combine  []int32 `json:"combine_relate,omitempty"`
-	Together []int32 `json:"together_relate,omitempty"`
+	Combine   []int32 `json:"combine_relate,omitempty"`
+	Together  []int32 `json:"together_relate,omitempty"`
+	TalGrade  [3]int  `json:"tlgrade,omitempty"`   // 三个神通槽的等级，0 按 1 算（S_UPDATE_PET tlgrade1-3）
+	ExtGrade  [3]int  `json:"ext_grade,omitempty"` // 第四神通三个候选的等级
+	Grade     int     `json:"grade"`
+	BagPos    int     `json:"bag_pos"`
+	SoulGrade int     `json:"soul_grade,omitempty"`
+	MagicLv   int     `json:"magic_lv,omitempty"`    // 天生法术等级，0 按 1 算（tal_magic_lev）
+	TLPoint   int     `json:"tlpoint,omitempty"`     // 可用神通点（境界提升、并入同名卡获得，升神通消耗；pet_talent.go）
+	TLAdd     int     `json:"tlpoint_add,omitempty"` // 已并入的同名卡张数（S_UPDATE_PET.tlpoint_add）
+	ExtIdx    int     `json:"ext_idx,omitempty"`     // 选中的候选（1-3，0 未选）
+	AttAdd    int     `json:"attadd,omitempty"`      // 培养：吃过的战力丹次数，每次 +1 攻击（pet_point.go）
+	HPAdd     int     `json:"hpadd,omitempty"`       // 培养：吃过的气血丹次数，每次 +4 生命
+	NpcNum    int32   `json:"npcnum"`
+	Type      int32   `json:"type"`
+	Exp       int32   `json:"exp"`
+	MagicExp  int32   `json:"magic_exp,omitempty"` // 天生法术本级经验（tal_magic_exp）
+	Locked    bool    `json:"locked,omitempty"`
+	ExtOn     bool    `json:"ext_on,omitempty"` // 第四神通已激活（disishentong.go）
+}
+
+// 经验池：上阵护法到等级上限后的战斗经验存进来，满 100 万折成 200 颗中级经验丹（10014）。
+const (
+	petPoolMax  = 1_000_000
+	petPoolDrug = 10014
+)
+
+// petGainExp 给护法加战斗经验：到等级上限（人物等级×2，封顶 100）后，多余的经验进经验池。
+func (s *Session) petGainExp(p *Player, pet *Pet, n int32, limit int) {
+	if n <= 0 {
+		return
+	}
+	pi := gamedata.Pets[pet.Type]
+	if pi == nil {
+		return
+	}
+	limit = min(limit, gamedata.MaxPetGrade)
+	maxTotal := gamedata.CardTotal(pi.Star, limit)
+	if pet.totalExp() >= maxTotal {
+		s.petPoolAdd(p, n)
+		return
+	}
+	pet.addExp(n, limit)
+	if now := pet.totalExp(); now > maxTotal {
+		over := now - maxTotal
+		pet.Exp -= over
+		s.petPoolAdd(p, over)
+	}
+}
+
+// petPoolAdd 加经验池，每满 100 万折成 200 颗中级经验丹存背包并弹窗。
+func (s *Session) petPoolAdd(p *Player, n int32) {
+	if n <= 0 {
+		return
+	}
+	p.PetExpPool += n
+	var adds []*Item
+	for p.PetExpPool >= petPoolMax {
+		p.PetExpPool -= petPoolMax
+		adds = append(adds, p.addItem(petPoolDrug, petPoolMax/5000)...)
+	}
+	if len(adds) == 0 {
+		return
+	}
+	p.saveLog(s)
+	s.sendDelta(p, &bagDelta{items: adds})
+	// 弹窗延后：等战斗动画播完 / 玩家点跳过（结算界面出来）再提示
+	go func() {
+		time.Sleep(3 * time.Second)
+		s.SendExt("ETC_PTO.S_SEND_NO_CACHE_MSG", xym.Msg{"msg": "经验池已满100万 自动转化为 中级经验丹 存入背包。"})
+	}()
 }
 
 // addExp 加卡牌经验并升级（exp 是本级内进度，升级时扣掉本级所需，抓包核对过）。
@@ -204,16 +274,29 @@ func (pet *Pet) addExp(n int32, limit int) int {
 }
 
 // petStats 是卡牌的攻击 / 生命：等级公式 + 出战位所穿装备（服务端下发的是叠加后的值）。
+// 末尾套洞府攻击 / 气血修为的面板加成（1%/级），客户端面板直接显示这里下发的值。
 func (p *Player) petStats(pet *Pet) (att, hp int32) {
+	att, hp = p.petStatsBeforeSetHP(pet)
+	return att, hp + p.petSetHP(pet)
+}
+
+// petStatsBeforeSetHP is the panel value used by each set bonus, before stacking.
+func (p *Player) petStatsBeforeSetHP(pet *Pet) (att, hp int32) {
 	pi := gamedata.Pets[pet.Type]
 	if pi == nil {
 		return 0, 0
 	}
 	att, hp = pi.Att(pet.Grade)+int32(pet.AttAdd), pi.HP(pet.Grade)+int32(pet.HPAdd*pointHPStep) // 培养加在缘分之前（pet_prop.lua）
+	ba, bh := p.frameBonus(pet)
+	att, hp = att+ba, hp+bh
 	if fp := p.fightPos(pet.BagPos); fp > 0 {
 		ga, gh := p.gearBonus(fp)
 		att = int32(float64(att+ga) * p.relateRatio(pi, fp, false) * p.extendRatio(pet, false)) // 缘分（relate.go）
 		hp = int32(float64(hp+gh) * p.relateRatio(pi, fp, true) * p.extendRatio(pet, true))
+	}
+	if a, h := p.dfPanelPct(); a > 0 || h > 0 {
+		att += int32(int64(att) * int64(a) / 100)
+		hp += int32(int64(hp) * int64(h) / 100)
 	}
 	return att, hp
 }
@@ -291,6 +374,7 @@ type Item struct {
 const (
 	firstNpcNum    = 10001
 	defaultBagSize = 100
+	gearBagSize    = 300 // 装备 / 法术背包的初始格数（用户 2026-10-30：100 格一下就满）
 	lineupSlots    = 8
 )
 
@@ -302,6 +386,7 @@ func newPlayer(uid int32) *Player {
 	for i := 1; i < len(p.BagLimit); i++ {
 		p.BagLimit[i] = defaultBagSize
 	}
+	p.BagLimit[bagSuit], p.BagLimit[bagBook] = gearBagSize, gearBagSize
 	lu := &Lineup{No: 1, Leader: 1}
 	for i := range lu.Slots {
 		lu.Slots[i] = &Slot{}
@@ -316,6 +401,7 @@ func newPlayer(uid int32) *Player {
 
 // addPet 发一张 1 级卡，放进第一个空的背包位。
 func (p *Player) addPet(typ int32) *Pet {
+	p.markOwned(typ) // 发卡即记入同名永久记录（pet_talent.go）
 	used := map[int]bool{}
 	for _, pt := range p.Pets {
 		used[pt.BagPos] = true
@@ -383,7 +469,7 @@ func (p *Player) petFull(pet *Pet) xym.Msg {
 	m := xym.Msg{"npcnum": pet.NpcNum, "fight_pos": p.fightPos(pet.BagPos), "bag_pos": pet.BagPos,
 		"type": pet.Type, "grade": pet.Grade, "exp": pet.Exp, "soul_grade": pet.SoulGrade,
 		"tal_magic_lev": pet.magicLv(), "tal_magic_exp": pet.MagicExp, "tlgrade1": pet.shownTalGrade(0), "tlgrade2": pet.shownTalGrade(1),
-		"tlgrade3": pet.shownTalGrade(2), "is_lock": pet.Locked, "tlpoint": pet.TLPoint, "tlpoint_add": pet.TLAdd,
+		"tlgrade3": pet.shownTalGrade(2), "is_lock": b2i(pet.Locked), "tlpoint": pet.TLPoint, "tlpoint_add": pet.TLAdd,
 		"hpadd": pet.HPAdd, "attadd": pet.AttAdd, "combine_relate": ridList(pet.Combine), "together_relate": ridList(pet.Together)}
 	tj := p.petTJ(pet)
 	m["tlxlv1"], m["tlxlv2"], m["tlxlv3"] = tj[0], tj[1], tj[2]
@@ -396,11 +482,13 @@ func (p *Player) petFull(pet *Pet) xym.Msg {
 	return m
 }
 
+// petBrief 是 S_PET_LIST 的简表（抓包 spec 就这些字段）。hpadd / attadd 必须带上：协议层对 spec 内
+// 缺失的字段按零值编码，客户端 merge_table 又整表覆盖，少了会让培养吸纳石（10310）的过滤器失效。
 func (p *Player) petBrief(pet *Pet) xym.Msg {
 	return xym.Msg{"fight_pos": p.fightPos(pet.BagPos), "bag_pos": pet.BagPos, "npcnum": pet.NpcNum,
 		"grade": pet.Grade, "exp": pet.Exp, "soul_grade": pet.SoulGrade, "type": pet.Type,
-		"tlgrade1": pet.shownTalGrade(0), "tlgrade2": pet.shownTalGrade(1), "tlgrade3": pet.shownTalGrade(2), "is_lock": pet.Locked,
-		"tlpoint_add": pet.TLAdd}
+		"tlgrade1": pet.shownTalGrade(0), "tlgrade2": pet.shownTalGrade(1), "tlgrade3": pet.shownTalGrade(2), "is_lock": b2i(pet.Locked),
+		"tlpoint_add": pet.TLAdd, "hpadd": pet.HPAdd, "attadd": pet.AttAdd}
 }
 
 func (p *Player) sortedPets() []*Pet {
@@ -418,8 +506,7 @@ func (p *Player) lineupsMsg() xym.Msg {
 			if s == nil {
 				s = &Slot{}
 			}
-			info = append(info, xym.Msg{"pos": i + 1, "pet": s.Pet,
-				"spos1": s.Suit[0], "spos2": s.Suit[1], "spos3": s.Suit[2], "mpos1": s.Book[0], "mpos2": s.Book[1]})
+			info = append(info, lineupSlotMsg(i+1, s))
 		}
 		lus = append(lus, xym.Msg{"lineup_no": lu.No, "leader": lu.Leader, "info": info})
 	}
@@ -431,26 +518,42 @@ func (p *Player) lineupsMsg() xym.Msg {
 
 // Players 缓存并持久化所有在线过的玩家存档。
 type Players struct {
-	st    store.Store
-	mu    sync.Mutex
-	byUID map[int32]*Player
+	st            store.Store
+	mu            sync.RWMutex
+	loads         sync.Map // uid -> *sync.Mutex，读档不占用全服缓存锁
+	byUID         map[int32]*Player
+	newRoleChests int32 // New stores only; loaded inventories never receive this again.
 }
 
 func OpenPlayers(st store.Store) *Players { return &Players{st: st, byUID: map[int32]*Player{}} }
 
 // Get 读档；没有存档时建一份新手档并落盘。
 func (ps *Players) Get(uid int32) (*Player, error) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-	if p := ps.byUID[uid]; p != nil {
+	ps.mu.RLock()
+	p := ps.byUID[uid]
+	ps.mu.RUnlock()
+	if p != nil {
+		return p, nil
+	}
+	value, _ := ps.loads.LoadOrStore(uid, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	ps.mu.RLock()
+	p = ps.byUID[uid]
+	ps.mu.RUnlock()
+	if p != nil {
 		return p, nil
 	}
 	data, err := ps.st.LoadPlayer(uid)
-	var p *Player
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		p = newPlayer(uid)
 		p.st = ps.st
+		if ps.newRoleChests > 0 {
+			p.addItem(10002, ps.newRoleChests) // 黄金宝箱
+			p.addItem(10003, ps.newRoleChests) // 对应钥匙
+		}
 		if err := p.save(); err != nil {
 			return nil, err
 		}
@@ -479,13 +582,22 @@ func (ps *Players) Get(uid int32) (*Player, error) {
 		fixed = su.ensureSkill() || fixed
 		fixed = su.normalizeSkills() || fixed
 	}
-	fixed = p.fixAllGear() || fixed   // 阵容里错位 / 失效的装备、法术书引用（bag.go）
+	fixed = p.fixAllGear() || fixed             // 阵容里错位 / 失效的装备、法术书引用（bag.go）
+	for _, t := range []int{bagSuit, bagBook} { // 旧存档的装备 / 法术背包补到新的初始格数
+		if p.BagLimit[t] < gearBagSize {
+			p.BagLimit[t], fixed = gearBagSize, true
+		}
+	}
+	fixed = p.migrateOwned() || fixed // 旧存档把当前持有的护法补进同名永久记录（pet_talent.go）
 	if p.mergeDuplicates() || fixed { // 旧存档里的同名重复卡并进同类（官方不留重复卡，pet_talent.go）
 		if err := p.save(); err != nil {
 			return nil, err
 		}
 	}
+	p.publishExamRank()
+	ps.mu.Lock()
 	ps.byUID[uid] = p
+	ps.mu.Unlock()
 	return p, nil
 }
 
@@ -495,12 +607,28 @@ func (p *Player) save() error {
 	if err != nil {
 		return err
 	}
-	return p.st.SavePlayer(p.UID, data)
+	digest := sha256.Sum256(data)
+	if p.hasSavedDigest && digest == p.savedDigest {
+		p.opsDirty = false
+		return nil
+	}
+	if err := p.st.SavePlayer(p.UID, data); err != nil {
+		return err
+	}
+	p.savedDigest, p.hasSavedDigest = digest, true
+	p.opsDirty = false
+	return nil
 }
 
 // saveLog 存档失败只记日志：玩法继续，下次改动会再写。
 func (p *Player) saveLog(s *Session) {
+	before := p.savedDigest
+	if s.role != nil {
+		p.role = s.role
+	}
 	if err := p.save(); err != nil {
 		s.logErr("save player", err)
+	} else if snapshot := p.publicTeam.Load(); snapshot == nil || before != p.savedDigest || snapshot.Grade != p.grade() {
+		p.refreshTeamSummary()
 	}
 }

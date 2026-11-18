@@ -76,12 +76,17 @@ func onOneClickEquip(s *Session, p *Player, m xym.Msg) {
 
 // applyPlan 把分配结果写回阵容 lu。
 func (p *Player) applyPlan(lu *Lineup, team []*ocPet) {
+	used := map[int]bool{}
 	for _, op := range team {
 		sl := lu.Slots[op.fp-1]
 		for k, x := range op.suits {
 			sl.Suit[k] = 0
-			if x != nil {
-				sl.Suit[k] = x.Pos
+			if x != nil && p.suitByPos(x.Pos) == x && !isSuitMaterial(x.Type) {
+				if info := gamedata.Suits[x.Type]; info != nil {
+					if slot, ok := suitSlot[info.Kind]; ok && slot == k && !used[x.Pos] {
+						sl.Suit[k], used[x.Pos] = x.Pos, true
+					}
+				}
 			}
 		}
 		for k, x := range op.books {
@@ -141,6 +146,9 @@ func (p *Player) planEquip(slots [8]*Slot) []*ocPet {
 		return nil
 	}
 	putSuit := func(op *ocPet, x *Suit) bool {
+		if isSuitMaterial(x.Type) {
+			return false
+		}
 		k, ok := suitSlot[gamedata.Suits[x.Type].Kind]
 		if !ok || op.suits[k] != nil || usedSuit[x] {
 			return false
@@ -149,7 +157,7 @@ func (p *Player) planEquip(slots [8]*Slot) []*ocPet {
 		return true
 	}
 	putBook := func(op *ocPet, x *Book) bool {
-		if usedBook[x] || !canBook(op, x.Type) {
+		if isBookMaterial(x.Type) || usedBook[x] || !canBook(op, x.Type) {
 			return false
 		}
 		for i := range op.books {

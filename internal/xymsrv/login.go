@@ -1,12 +1,33 @@
 package xymsrv
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"time"
 
 	"turnrpg/internal/xym"
 )
+
+func (s *Session) beginAuth(urs string) func(bool) {
+	timeout := 10 * time.Second
+	if d := s.srv.cfg.HandshakeTimeout; d > 0 && d < timeout {
+		timeout = d
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done, blocked := s.srv.guards.beginWait(ctx, s.closing, urs, s.ipOf())
+	if done == nil {
+		message := "系统繁忙，请稍后重试。"
+		if blocked {
+			message = "尝试次数过多，请15分钟后重试。"
+		}
+		slog.Warn("authentication refused", "sess", s.id, "blocked", blocked)
+		s.sendFail(xym.FailRefused, message)
+		s.Close()
+	}
+	return done
+}
 
 // 登录流程（与 47.96.252.180:28417 抓包对照，analysis/captures/login-probe.jsonl）：
 //
@@ -26,6 +47,8 @@ func readVersion(r *xym.Reader) (v [3]int) {
 // authFail 把账号库的错误换成 S_LOGIN_FAIL。101/102/1/100 客户端自己有提示，不带 S_MSG。
 func (s *Session) authFail(err error) {
 	switch {
+	case errors.Is(err, ErrRegistrationClosed):
+		s.sendFail(xym.FailRefused, ErrRegistrationClosed.Error())
 	case errors.Is(err, ErrInvalid):
 		s.sendFail(xym.FailInvalid, "")
 	case errors.Is(err, ErrNoAccount):
@@ -35,7 +58,7 @@ func (s *Session) authFail(err error) {
 	case errors.Is(err, ErrNameTaken):
 		s.sendFail(xym.FailNameTaken, "")
 	case errors.Is(err, ErrBadCode):
-		s.sendFail(xym.FailRefused, "安全码要 4-16 位字母或数字，而且不能和密码一样。")
+		s.sendFail(xym.FailRefused, "安全码要 8-16 位，必须同时含字母和数字，而且不能和密码一样。")
 	default:
 		slog.Error("account store", "sess", s.id, "err", err)
 		s.sendFail(xym.FailRefused, "服务器存档出错，请稍后再试。")
@@ -69,15 +92,21 @@ func (s *Session) onLogin(main byte, body []byte) {
 		return
 	}
 
+	done := s.beginAuth(urs)
+	if done == nil {
+		return
+	}
+	failed := true
+	defer func() { done(failed) }()
 	var acc *Account
 	var err error
 	if main == xym.CRegister {
 		switch {
 		case !hasDevice:
-			s.sendFail(xym.FailRefused, "客户端版本太旧，请安装最新的细水长流客户端再注册。")
+			s.sendFail(xym.FailRefused, "客户端版本太旧，请安装最新的再续前缘客户端再注册。")
 			return
 		case code == "":
-			s.sendFail(xym.FailRefused, "注册需要设置安全码（4-16 位字母或数字）。")
+			s.sendFail(xym.FailRefused, "注册需要设置安全码（8-16 位，必须同时含字母和数字）。")
 			return
 		}
 		acc, err = s.srv.accounts.Register(urs, pwd, code)
@@ -88,9 +117,14 @@ func (s *Session) onLogin(main byte, body []byte) {
 		acc, err = s.srv.accounts.Login(urs, pwd, device)
 	}
 	if err != nil {
+		if errors.Is(err, ErrRegistrationClosed) {
+			failed = false
+		}
 		s.authFail(err)
 		return
 	}
+	failed = false
+	done(false)
 	sid, err := s.srv.accounts.NewSID(acc)
 	if err != nil {
 		s.authFail(err)
@@ -172,23 +206,33 @@ func (s *Session) enterGame(role *Role, isNew bool) {
 		return
 	}
 	s.role, s.player, s.creating = role, player, false
-	player.role = role
 	player.mu.Lock()
+	player.role = role
 	leveled := false
 	for _, pet := range player.Pets { // 补升：卡牌升级上线前攒下的经验、或人物升级后放开的上限
 		leveled = pet.addExp(0, role.PetCap()) > 0 || leveled
 	}
+	if s.srv.cfg.EnableGMOps && player.opsLogin(time.Now()) {
+		leveled = true
+	}
 	if leveled {
 		player.saveLog(s)
 	}
+	summary := player.refreshTeamSummary()
 	player.mu.Unlock()
 	if h := s.srv.cfg.Hotfix; h != nil {
+		s.send(xym.MainExt, h)
+	}
+	for _, h := range s.srv.cfg.HotfixBatches {
 		s.send(xym.MainExt, h)
 	}
 	if isNew {
 		s.SendExt("LOGIN_PTO.S_NEW_USER", nil) // 开场剧情等它关起名框，要在 S_LOGIN_SUC 之前
 	}
-	s.SendExt("LOGIN_PTO.S_LOGIN_SUC", role.LoginSuc(s.acc.URS, time.Now()))
+	login := role.LoginSuc(s.acc.URS, time.Now())
+	login["leader"] = summary.Leader
+	s.SendExt("LOGIN_PTO.S_LOGIN_SUC", login)
+	s.inGame.Store(true)
 	s.pushAfterLogin()
 	slog.Info("enter game", "sess", s.id, "uid", role.UID, "name", role.Name,
 		"ver", s.ver, "addr", s.conn.RemoteAddr().String())
@@ -206,16 +250,19 @@ func (s *Session) onRecover(body []byte) {
 		s.sendFail(xym.FailInvalid, "")
 		return
 	}
+	done := s.beginAuth(urs)
+	if done == nil {
+		return
+	}
 	res, err := s.srv.accounts.Recover(urs, code, newPwd)
+	done(err != nil)
 	switch {
 	case err == nil:
 		if res == xym.RecoverDone {
 			slog.Info("password reset", "sess", s.id, "urs", urs)
 		}
 		s.sendFail(res, "")
-	case errors.Is(err, ErrNoAccount):
-		s.sendFail(xym.FailNoAccount, "没有「"+urs+"」这个账号。")
-	case errors.Is(err, ErrBadCode):
+	case errors.Is(err, ErrNoAccount), errors.Is(err, ErrBadCode):
 		s.sendFail(FailRecoverBadCode, "安全码不对。")
 		if s.loginFails++; s.loginFails >= maxLoginFails {
 			s.Close()

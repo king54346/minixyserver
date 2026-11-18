@@ -89,7 +89,7 @@ func TestShop(t *testing.T) {
 	c.expectExt("MALL_PTO.S_OPEN_DAOJU_SHANGCHENG")
 	c.sendExt("MALL_PTO.C_OPEN_MALL_TAG", xym.Msg{"id": tagTequan})
 	l := c.expectExt("MALL_PTO.S_OPEN_TEQUANLIBAO")["items"].([]xym.Msg)
-	if len(l) != len(tequanGifts) || num(l[0], "price") != 100 {
+	if len(l) != len(tequanGifts)+15 || num(l[0], "price") != 100 || num(l[0], "type") != 10027 {
 		t.Fatalf("tequan %v", l[:1])
 	}
 	c.sendExt("MALL_PTO.C_BUY_GIFT", xym.Msg{"type": 11112}) // VIP2，人物 VIP 0
@@ -105,6 +105,16 @@ func TestShop(t *testing.T) {
 	c.sendExt("MALL_PTO.C_BUY_GIFT", xym.Msg{"type": 11240}) // 本周已买过周礼包（阵法也算）
 	if m := c.expectExt("ETC_PTO.S_RET_MSG"); !strings.Contains(m["msg"].(string), "本周") {
 		t.Fatalf("weekly %v", m)
+	}
+	// 恭贺礼包：不占周礼包名额，每个只能买一次
+	c.sendExt("MALL_PTO.C_BUY_GIFT", xym.Msg{"type": int64(10029)}) // VIP3 恭贺，300 元宝
+	c.until(t, "MALL_PTO.S_OPEN_TEQUANLIBAO")
+	if p.itemCount(10029) != 1 || srv.roles.Get(p.UID).Gold != 500 {
+		t.Fatalf("gonghe %d gold %d", p.itemCount(10029), srv.roles.Get(p.UID).Gold)
+	}
+	c.sendExt("MALL_PTO.C_BUY_GIFT", xym.Msg{"type": int64(10029)})
+	if m := c.expectExt("ETC_PTO.S_RET_MSG"); !strings.Contains(m["msg"].(string), "只能购买一次") {
+		t.Fatalf("gonghe twice %v", m)
 	}
 }
 

@@ -238,13 +238,13 @@ func onMijingFight(s *Session, p *Player, m xym.Msg) {
 	st := p.mijing()
 	switch {
 	case !mijingOpen(id, mijingNow()) || d < 1 || d > mijingDiffs:
-		s.sendMsg("这个秘境今天没有开放。")
+		s.retMsg("这个秘境今天没有开放。")
 		return
 	case s.role.Grade < mijingLevel[d-1]:
-		s.sendMsg(fmt.Sprintf("%d级开启。", mijingLevel[d-1]))
+		s.retMsg(fmt.Sprintf("%d级开启。", mijingLevel[d-1]))
 		return
 	case st.Used[id] >= mijingTimes:
-		s.sendMsg("今日挑战次数已用完。")
+		s.retMsg("今日挑战次数已用完。")
 		return
 	case s.role.TPoint < mijingEnergy[d-1]:
 		s.retMsg("体力不足。")
@@ -254,7 +254,7 @@ func onMijingFight(s *Session, p *Player, m xym.Msg) {
 	team1, _ := p.dyTeam(nil)
 	team2 := mijingEnemyFor(d)
 	if len(team1) == 0 || len(team2) == 0 {
-		s.sendMsg("阵容为空，请先上阵。")
+		s.retMsg("阵容为空，请先上阵。")
 		return
 	}
 	r1, r2 := battle.CloneTeam(team1), battle.CloneTeam(team2)
@@ -300,7 +300,7 @@ func (s *Session) mijingWin(p *Player, id, d int, rng *rand.Rand, rid string) {
 	}, "tpoint", "cash", "soulexp")
 	list := s.sendDelta(p, delta)
 	r := rewardMsg(2, list)
-	r["cash"], r["soul"], r["record"], r["star"], r["no_fight_again"] = cash, soul, rid, 1, 0
+	r["cash"], r["soul"], r["record"], r["star"], r["no_fight_again"] = cash, soul, rid, 1, 1
 	if times > 1 {
 		s.retMsg("触发了特殊奖励，本次奖励翻倍！")
 	}

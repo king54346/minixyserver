@@ -55,6 +55,7 @@ type helperCard struct {
 	SkillFull bool
 	Fighter   *battle.Fighter
 	Talents   []int32
+	Card      qjCard // 卡面：境界、同名、神通等级、第四神通（取经援助的卡用）
 }
 
 var helperSnaps = struct {
@@ -89,7 +90,9 @@ func (srv *Server) helperOf(uid int32) *helperCard {
 	pi := gamedata.Pets[pet.Type]
 	tals, _ := q.activeTalents(pet, pi)
 	c := &helperCard{UID: uid, Name: ro.Name, Grade: ro.Grade, Icon: ro.Icon, VIP: ro.VIP, LSkill: pi.LeaderSkill,
-		Shape: pet.Type, SkillFull: pet.talentsFull(pi), Fighter: q.fighterOf(pet, 0), Talents: slices.Clone(tals)}
+		Shape: pet.Type, SkillFull: pet.talentsFull(pi), Fighter: q.fighterOf(pet, 0), Talents: slices.Clone(tals),
+		Card: qjCard{SGrade: pet.SoulGrade, TLAdd: pet.TLAdd, ExTalent: pet.extTalent(pi),
+			TLGrade: [3]int{pet.shownTalGrade(0), pet.shownTalGrade(1), pet.shownTalGrade(2)}}}
 	helperSnaps.Lock()
 	helperSnaps.m[uid] = c
 	helperSnaps.Unlock()

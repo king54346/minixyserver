@@ -35,6 +35,10 @@ func (s *Session) dyRng() *rand.Rand {
 	return rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(s.role.UID)))
 }
 
+// 卡牌边框碎片（10443–10449）**不再从妖窟掉落**（2026-11-18 用户要求）：
+// 现在的来源是「取经商店 100 经书 → 5 个」和「魔潮入侵前三名 5/3/2 个」。
+// 随机取型的公共函数见 h_card_frame.go 的 framePartTypes。
+
 func (s *Session) dyGongde(p *Player) {
 	d := p.dy()
 	s.SendExt("DANGYAO_PTO.S_SEND_GONGDE", xym.Msg{"gongde": d.Gongde, "level": d.gongdeLevel()})
@@ -51,6 +55,37 @@ func (s *Session) dyReward(p *Player) {
 		ling = r.Ling
 	}
 	s.SendExt("DANGYAO_PTO.S_SEND_REWARD", xym.Msg{"cash": 0, "ling": ling, "pet": 0, "soul": 0, "item": 0, "magic": 0})
+}
+
+// dyGiveExp 发荡妖经验（2026-10-30 要求）：道行经验加给人物、护法经验加给参战护法，
+// 回包格式照 winGate（h_task.go）：S_ATTR_UPDATE + S_UPDATE_PET。
+func (s *Session) dyGiveExp(p *Player, pets []*Pet, mexp, pexp int) {
+	if mexp <= 0 && pexp <= 0 {
+		return
+	}
+	role, err := s.srv.roles.Update(s.role.UID, func(ro *Role) bool {
+		ro.GainExp(int32(mexp))
+		return true
+	})
+	if err != nil {
+		s.logErr("save role", err)
+		return
+	}
+	s.role = role
+	pe := int32(pexp)
+	full := make([]xym.Msg, 0, len(pets))
+	for _, pet := range pets {
+		s.petGainExp(p, pet, pe, role.PetCap())
+		full = append(full, p.petFull(pet))
+	}
+	s.SendExt("ETC_PTO.S_ATTR_UPDATE", xym.Msg{"attr": []xym.Msg{
+		{"name": "grade", "val": role.Grade}, {"name": "exp", "val": role.Exp},
+		{"name": "next_exp", "val": nextExp(role.Grade)},
+		{"name": "xiuwei", "val": role.Xiuwei}, {"name": "xgrade", "val": role.XGrade},
+	}})
+	if len(full) > 0 {
+		s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0, "pets": full})
+	}
 }
 
 func posList(l []int) []xym.Msg {
@@ -124,15 +159,18 @@ func onDyRefresh(s *Session, p *Player, m xym.Msg) {
 		s.retMsg("这个妖窟还没有开放。")
 		return
 	}
-	cost := 0
-	if stage > 100 {
-		cost = dySpecialCost
-	}
-	if !s.dySpend(cost, 0) {
-		s.retMsg(fmt.Sprintf("元宝不足：重置特殊妖窟需要 %d 元宝。", cost))
+	d := p.dy()
+	// 每日进入妖窟次数：第 1 次免费，之后 30/50/70... 每次 +20，共 1+10 次
+	if d.DayN >= dyDayLimit {
+		s.retMsg("今日荡妖次数已用完，请明天再来。")
 		return
 	}
-	d := p.dy()
+	cost := dyRefreshGold(d.DayN)
+	if !s.dySpend(cost, 0) {
+		s.retMsg(fmt.Sprintf("元宝不足：第 %d 次进入妖窟需要 %d 元宝。", d.DayN+1, cost))
+		return
+	}
+	d.DayN++
 	rng := s.dyRng()
 	d.Gongde = min(d.Gongde, d.gongdeMax())
 	d.Ratio = min(d.Ratio+dyRatioStep, dyRatioMax)
@@ -201,9 +239,21 @@ func onDyClickGrid(s *Session, p *Player, m xym.Msg) {
 		p.saveLog(s)
 		s.SendExt("DANGYAO_PTO.S_OPEN_GRID", xym.Msg{"mapid": dyMapID(r.Stage, r.Floor), "grid": i, "type": dyBlank,
 			"times": 0, "max": 0})
+		_, pets := p.dyTeam(d.Dead)
+		s.dyGiveExp(p, pets, dyExpM[dyBox], dyExpP[dyBox])
+		s.SendExt("ETC_PTO.S_REWARD_MSG", xym.Msg{"cash": 0, "mexp": dyExpM[dyBox], "pexp": dyExpP[dyBox],
+			"ling": dyLing[dyBox], "gold": 0, "soul": 0,
+			"type": boxFightWin, "item": 0, "no_fight_again": 1, "star": 1, "list": []xym.Msg{}})
 		s.dyReward(p)
 	case dyDown, dyUp:
 		if g.Type == dyDown {
+			// 必须击败当前层所有头目/魔王才能进入下一层（小怪不用清）
+			for _, gg := range d.floor().Grids {
+				if (gg.Type == dyLeader || gg.Type == dyBoss) && !gg.Dead {
+					s.retMsg("还有头目未击败，无法进入下一层。")
+					return
+				}
+			}
 			r.Floor++
 		} else if r.Floor > 1 {
 			r.Floor--
@@ -221,7 +271,7 @@ func onDyClickGrid(s *Session, p *Player, m xym.Msg) {
 func (s *Session) dyFight(p *Player, g *dyGrid, i int) {
 	d := p.dy()
 	r := d.Run
-	team1, _ := p.dyTeam(d.Dead)
+	team1, pets := p.dyTeam(d.Dead)
 	if len(team1) == 0 {
 		s.retMsg("出战护法全部阵亡，请先复活。")
 		return
@@ -255,12 +305,20 @@ func (s *Session) dyFight(p *Player, g *dyGrid, i int) {
 		"otherparam": recordParams(r1, r2), "record": res.Record,
 	})
 	ling := 0
+	mexp, pexp := 0, 0
+	var loot []xym.Msg
 	if res.Win {
 		ling = dyLing[g.Type]
 		r.Ling += ling
+		mexp, pexp = dyExpM[g.Type], dyExpP[g.Type]
+		s.dyGiveExp(p, pets, mexp, pexp)
+		// 边框碎片不再从妖窟掉落（2026-11-18 用户要求）：来源改为「取经兑换」和「魔潮前三名」。
 	}
-	s.SendExt("ETC_PTO.S_REWARD_MSG", xym.Msg{"cash": 0, "mexp": 0, "pexp": 0, "ling": ling, "gold": 0, "soul": 0,
-		"type": map[bool]int{true: boxFightWin, false: boxFightLose}[res.Win], "item": 0, "no_fight_again": 1, "star": map[bool]int{true: 1}[res.Win], "list": []xym.Msg{}})
+	if loot == nil {
+		loot = []xym.Msg{}
+	}
+	s.SendExt("ETC_PTO.S_REWARD_MSG", xym.Msg{"cash": 0, "mexp": mexp, "pexp": pexp, "ling": ling, "gold": 0, "soul": 0,
+		"type": map[bool]int{true: boxFightWin, false: boxFightLose}[res.Win], "item": 0, "no_fight_again": 1, "star": map[bool]int{true: 1}[res.Win], "list": loot})
 	if !res.Win {
 		p.saveLog(s)
 		s.dyDieList(p)
@@ -270,11 +328,23 @@ func (s *Session) dyFight(p *Player, g *dyGrid, i int) {
 		}
 		return
 	}
-	last := r.Floor == dyFloors(r.Stage) && (g.Type == dyLeader || g.Type == dyBoss)
 	if g.Type == dyBoss {
 		d.Ratio = 0
 	}
+	if g.Type == dyLeader || g.Type == dyBoss {
+		g.Dead = true // 头目/魔王击败标记：下层通道要等本层头目清完才能走
+	}
 	g.Type = dyBlank
+	// 通关：最后一层的头目/魔王全部击败（不是打一个就通）
+	last := false
+	if r.Floor == dyFloors(r.Stage) {
+		last = true
+		for _, gg := range d.floor().Grids {
+			if (gg.Type == dyLeader || gg.Type == dyBoss) && !gg.Dead {
+				last = false
+			}
+		}
+	}
 	s.SendExt("DANGYAO_PTO.S_OPEN_GRID", xym.Msg{"mapid": dyMapID(r.Stage, r.Floor), "grid": i, "type": dyBlank,
 		"times": 0, "max": 0})
 	s.dyReward(p)
@@ -310,30 +380,45 @@ func onDyOneKey(s *Session, p *Player, m xym.Msg) {
 		s.retMsg("妖窟已变化，请重新进入。")
 		return
 	}
-	f := d.floor()
-	need := 0
-	for _, g := range f.Grids {
-		if !g.Open {
-			need++
+	run := d.Run
+	mapid, stage, floor := int(m["mapid"].(int64)), d.Run.Stage, d.Run.Floor
+	s.askBox(fmt.Sprintf("本次扫荡需要花费 %d点体力和%d元宝 是否扫荡？", dySweepTPoint, dySweepGold), []string{"确定", "取消"}, func(opt int) {
+		if opt != 0 {
+			return
 		}
-	}
-	if !s.dySpend(0, need) {
-		s.retMsg(fmt.Sprintf("体力不足：一键荡妖需要 %d 点体力。", need))
-		return
-	}
-	list := []xym.Msg{}
-	for i := range f.Grids {
-		g := &f.Grids[i]
-		g.Open = true
-		if g.Type == dyMonster || g.Type == dyBox {
-			d.Run.Ling += dyLing[g.Type]
-			g.Type = dyBlank
+		d := p.dy()
+		if d.Run != run || d.Run.Stage != stage || d.Run.Floor != floor {
+			s.retMsg("妖窟已变化，请重新进入。")
+			return
 		}
-		list = append(list, xym.Msg{"grid": i, "type": g.Type})
-	}
-	p.saveLog(s)
-	s.SendExt("DANGYAO_PTO.S_SEND_ONE_KEY_DANGYAO", xym.Msg{"mapid": dyMapID(d.Run.Stage, d.Run.Floor), "list": list})
-	s.dyReward(p)
+		if !s.dySpend(dySweepGold, dySweepTPoint) {
+			s.retMsg(fmt.Sprintf("体力或元宝不足：扫荡需要 %d 点体力、%d 元宝。", dySweepTPoint, dySweepGold))
+			return
+		}
+		f := d.floor()
+		list := []xym.Msg{}
+		mexp, pexp := 0, 0
+		for i := range f.Grids {
+			g := &f.Grids[i]
+			g.Open = true
+			if g.Type == dyMonster || g.Type == dyBox {
+				d.Run.Ling += dyLing[g.Type]
+				mexp += dyExpM[g.Type]
+				pexp += dyExpP[g.Type]
+				g.Type = dyBlank
+			}
+			list = append(list, xym.Msg{"grid": i, "type": g.Type})
+		}
+		p.saveLog(s)
+		s.SendExt("DANGYAO_PTO.S_SEND_ONE_KEY_DANGYAO", xym.Msg{"mapid": mapid, "list": list})
+		_, pets := p.dyTeam(d.Dead)
+		s.dyGiveExp(p, pets, mexp, pexp)
+		if mexp > 0 || pexp > 0 {
+			s.SendExt("ETC_PTO.S_REWARD_MSG", xym.Msg{"cash": 0, "mexp": mexp, "pexp": pexp, "ling": 0, "gold": 0, "soul": 0,
+				"type": boxFightWin, "item": 0, "no_fight_again": 1, "star": 1, "list": []xym.Msg{}})
+		}
+		s.dyReward(p)
+	})
 }
 
 // reliveCost：复活 n 名阵亡护法先用免费次数，其余每名 2 元宝。
@@ -411,8 +496,9 @@ func onDyGiveUp(s *Session, p *Player, m xym.Msg) {
 // dyShop：S_OPEN_SHOP（只列已上架且还能买的商品）。
 func (s *Session) dyShop(p *Player, typ int) {
 	d := p.dy()
-	if d.Shop == nil {
-		dyRollShop(d, false, s.dyRng())
+	// 首次打开、或称号等级变了（升级后）都按当前等级重新上架，不用等重置妖窟。
+	if d.Shop == nil || d.ShopLv != d.gongdeLevel() || d.ShopVer != dyShopVer {
+		dyRollShop(d, d.Special, s.dyRng())
 	}
 	list := []xym.Msg{}
 	for _, sl := range d.Shop[typ] {

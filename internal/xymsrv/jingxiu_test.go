@@ -36,12 +36,12 @@ func TestJingxiu(t *testing.T) {
 	// 精修吸纳石：退回两次精修的全部元素（2 + 9），精修次数清零
 	e2, _ := jingxiuCost(mi, 2)
 	p.mu.Lock()
-	p.addItem(jingxiuPullItem, 1)
+	p.addItem(itemPullJingxiu, 1)
 	p.mu.Unlock()
 	before := p.itemCount(10133)
 	c.sendExt("ITEM_PTO.C_PULL_OUT_MAGIC_JINGXIU", xym.Msg{"pos": 50, "type": 12101})
 	c.until(t, "ITEM_PTO.S_UPDATE_BOOK")
-	if p.bookByPos(50).JX != 0 || p.itemCount(10133) != before+elems+e2 || p.itemCount(jingxiuPullItem) != 0 {
+	if p.bookByPos(50).JX != 0 || p.itemCount(10133) != before+elems+e2 || p.itemCount(itemPullJingxiu) != 0 {
 		t.Fatalf("pull out: jx %d elems %d", p.bookByPos(50).JX, p.itemCount(10133)-before)
 	}
 }

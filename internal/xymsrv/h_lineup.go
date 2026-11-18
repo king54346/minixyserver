@@ -38,6 +38,11 @@ func onSetLineups(s *Session, p *Player, m xym.Msg) {
 		}
 		used := map[int]bool{}
 		info, _ := r["info"].([]xym.Msg)
+		if p.staleLineupPositions(p.lineup(lu.No), info) {
+			s.sendMsg("阵容装备数据已过期，请完全退出游戏并重新登录后再试。")
+			s.SendExt("LINEUP_PTO.S_SEND_LINEUP", p.lineupsMsg())
+			return
+		}
 		for _, x := range info {
 			pos, pet := int(x["pos"].(int64)), int(x["pet"].(int64))
 			if pos < 1 || pos > lineupSlots || (pet != 0 && (!owned[pet] || used[pet])) {
@@ -48,7 +53,7 @@ func onSetLineups(s *Session, p *Player, m xym.Msg) {
 			used[pet] = pet != 0
 			sl := lu.Slots[pos-1]
 			sl.Pet = pet
-			sl.Suit = [3]int{int(x["spos1"].(int64)), int(x["spos2"].(int64)), int(x["spos3"].(int64))}
+			sl.Suit = [3]int{lineupSuitPos(x, 0), lineupSuitPos(x, 1), lineupSuitPos(x, 2)}
 			sl.Book = [2]int{int(x["mpos1"].(int64)), int(x["mpos2"].(int64))}
 			p.fixSlotGear(sl) // 按部位归位（客户端本地数据过期时可能把装备填错栏）
 		}
@@ -78,6 +83,7 @@ func onSetLineups(s *Session, p *Player, m xym.Msg) {
 	if p.lineup(fno) != nil {
 		p.FightNo = fno
 	}
+	s.setHPPanel = p.lineupSetHP()
 	var changed []xym.Msg
 	for _, pet := range p.sortedPets() {
 		if fp := p.fightPos(pet.BagPos); fp != before[pet.NpcNum] || fp > 0 { // 出战卡都回：缘分随阵容 / 装备变化
@@ -155,6 +161,7 @@ func (s *Session) changeSlots(p *Player, change func()) {
 		before[pet.NpcNum] = p.fightPos(pet.BagPos)
 	}
 	change()
+	s.setHPPanel = p.lineupSetHP()
 	if lu := p.lineup(p.FightNo); lu != nil && (lu.Leader < 1 || lu.Slots[lu.Leader-1].Pet == 0) {
 		for i, sl := range lu.Slots {
 			if sl.Pet != 0 {

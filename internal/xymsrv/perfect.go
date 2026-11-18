@@ -217,7 +217,7 @@ func (p *Player) fillPerfect() {
 	for _, it := range []struct {
 		typ int
 		n   int32
-	}{{lianshenStone, 999}, {ningshenStone, 999}, {zaojingStone, 99}, {wuziTianshu, 99}, {yuhuoDan, 999}, {cuiYuanSha, 999}} {
+	}{{lianshenStone, 999}, {ningshenStone, 999}, {itemZaojingStone, 99}, {wuziTianshu, 99}, {yuhuoDan, 999}, {cuiYuanSha, 999}} {
 		p.addItem(it.typ, it.n)
 	}
 	for _, e := range elementItems {

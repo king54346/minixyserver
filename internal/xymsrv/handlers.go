@@ -93,6 +93,7 @@ func (s *Session) handleExt(body []byte) {
 		m = nil // 字段解不全也照样走 LOCK 兜底，免得客户端卡住
 	}
 	full := spec.Module + "." + spec.Name
+	s.lastRequest = full
 	slog.Debug("c2s", "sess", s.id, "msg", full, "data", m)
 	h := handlers[pid]
 	if h == nil || m == nil {
@@ -106,6 +107,7 @@ func (s *Session) handleExt(body []byte) {
 		return
 	}
 	p := s.player
+	s.setRequestPhase(full, "player_lock")
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// handler 出错（panic）不能拖垮整个进程（所有人一起掉线）：记下堆栈，回一条解锁包，会话照常
@@ -123,10 +125,16 @@ func (s *Session) handleExt(body []byte) {
 		s.role = ro
 	}
 	p.role = s.role
+	s.setRequestPhase(full, "energy_regen")
 	s.applyRegen(p)
 	gold := s.role.Gold
 	p.refreshShownSkills()
+	s.setRequestPhase(full, "handler")
 	h(s, p, m)
+	if s.srv.cfg.EnableGMOps && p.opsDirty {
+		p.saveLog(s)
+	}
+	s.setRequestPhase(full, "post_handler")
 	if ch := p.refreshShownSkills(); len(ch) > 0 { // 套装效果显示等级随穿戴 / 宝石变化（inlay.go）
 		l := make([]xym.Msg, 0, len(ch))
 		for _, su := range ch {
@@ -134,6 +142,7 @@ func (s *Session) handleExt(body []byte) {
 		}
 		s.SendExt("ITEM_PTO.S_UPDATE_SUIT", xym.Msg{"is_all": 0, "suits": l})
 	}
+	s.pushSetHPPanel(p)
 	if ro := s.srv.roles.Get(s.role.UID); ro != nil && ro.Gold < gold { // 每花 100 元宝得 1 张扫荡券（sweep.go）
 		p.trackGoldSpent(gold - ro.Gold)
 		if err := p.save(); err != nil {
@@ -145,14 +154,35 @@ func (s *Session) handleExt(body []byte) {
 
 func ignore(*Session, *Player, xym.Msg) {}
 
+// onHotfixRequest 客户端主动请求补丁内容（LOGIN_PTO.C_GET_NEW_HOTFIX_CONTENT）：
+// 把登录时预编好的 S_SEND_NEW_HOTFIX_CONTENT 原样回一份，客户端据此执行补丁。
+func onHotfixRequest(s *Session, p *Player, m xym.Msg) {
+	slog.Info("hotfix content requested", "sess", s.id, "msg", m)
+	if h := s.srv.cfg.Hotfix; h != nil {
+		s.send(xym.MainExt, h)
+	}
+}
+
+// onNoteBewUser 客户端补丁/探针回传（20 号补丁的 V|dfX|mbX、W|hideX 都走这里）：
+// 原先是空处理，补丁到底执行没执行看不到，这里改成记日志。
+func onNoteBewUser(s *Session, p *Player, m xym.Msg) {
+	uid := int32(0)
+	if p != nil {
+		uid = p.UID
+	}
+	slog.Info("note bew user", "sess", s.id, "uid", uid, "msg", m)
+}
+
 func init() {
+	Handle("LOGIN_PTO.C_NOTE_BEW_USER", onNoteBewUser)
+	// 客户端登录后会主动请求一次补丁内容：之前服务端没实现，一直是 unhandled。
+	Handle("LOGIN_PTO.C_GET_NEW_HOTFIX_CONTENT", onHotfixRequest)
 	// 登录后客户端上报的设备/渠道信息，原服只记日志，不回包。
 	for _, name := range []string{
 		"LOGIN_PTO.C_MACHINE_INFO",
 		"LOGIN_PTO.C_AFTER_LOGIN",
 		"LOGIN_PTO.C_SET_USER_MARK",
 		"LOGIN_PTO.C_PUSH_TOKEN_INFO",
-		"LOGIN_PTO.C_NOTE_BEW_USER",
 		"LOGIN_PTO.C_GOT_UID",
 		"ETC_PTO.C_ACTIVATION_LOG",
 	} {

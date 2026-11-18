@@ -19,7 +19,7 @@ import (
 // S_REWARD_MSG{type 1}、S_OPEN_DAOJU_SHANGCHENG。
 //
 // 估计：寻英帖命中率 50%（出 5 星时一半概率从所选里出）；卡池切换当天有效，次日回到当天默认种族；
-// 道具商城除抓包里标了每日限购 22 次的 10257 外不限购。
+// 道具商城除抓包里标了每日限购 22 次的 10257、本服加的包子（每日 500 个）外不限购。
 
 const (
 	wishPct      = 50
@@ -38,12 +38,15 @@ type shopItem struct {
 var itemShop = []shopItem{
 	{11153, 500, 0}, {11460, 20, 0}, {11461, 350, 0}, {11462, 60, 0}, {11464, 500, 0}, {10317, 300, 0},
 	{10257, 20, 22},
+	{10043, 20, 500},                                                   // 包子（+5 体力）：用户 2026-10-30 加，每日限购 500 个
 	{10452, 1620, 0},                                                   // 五级宝石袋（hotfix 补的道具，gamedata/hotfix_items.go）
 	{10216, 100, 0}, {10217, 100, 0}, {10249, 100, 0}, {10250, 100, 0}, // 凿晶石、炼器石、炼法石、悟法石
 	{10417, 500, 0}, {10416, 500, 0}, // 同修石、结缘石（抓包商城里没有，价格估计）
 	{10442, 15, 0}, // 阵魂图册（阵法升阶，zhenfa.go；用户 zhenfa.md 藏经阁 15 经书一本，本服没有藏经阁，按 15 元宝卖）
 	{10251, 100, 0}, {10310, 100, 0}, {10311, 100, 0}, {10342, 30, 0}, {10140, 20, 0}, {10002, 20, 0},
 	{10003, 10, 0}, {10020, 500, 0}, {11152, 500, 0},
+	// 卡牌边框碎片（10443–10449）已从商城下架（2026-11-18 用户要求）：
+	// 来源改为「取经商店 100 经书 → 5 个」和「魔潮入侵前三名 5/3/2 个」。
 }
 
 func raceToday(now time.Time) int { return int(now.Unix()/86400)%4 + 1 }
@@ -122,14 +125,19 @@ func onBuyShopItem(s *Session, p *Player, m xym.Msg) {
 	idx := slices.IndexFunc(itemShop, func(x shopItem) bool { return x.Type == typ })
 	mall := p.mall(time.Now())
 	switch {
-	case idx < 0 || n <= 0 || gamedata.Items[typ] == nil:
+	case idx < 0 || n <= 0 || n > 1000000 || gamedata.Items[typ] == nil:
 		s.retMsg("商城里没有这件商品。")
 		return
 	case itemShop[idx].Limit > 0 && mall.Bought[typ]+n > itemShop[idx].Limit:
 		s.retMsg("超出今日限购数量。")
 		return
 	}
-	cost := itemShop[idx].Price * int32(n)
+	total := int64(itemShop[idx].Price) * int64(n)
+	if total > 2147483647 {
+		s.retMsg("购买总价过高，请减少数量。")
+		return
+	}
+	cost := int32(total)
 	if !s.roleUpdate(func(ro *Role) bool {
 		if ro.Gold < cost {
 			return false
@@ -197,7 +205,7 @@ func onRaceSwitch(s *Session, p *Player, m xym.Msg) {
 	mall.Race = race
 	p.saveLog(s)
 	s.raceSwitchMsg(p)
-	s.SendExt("MALL_PTO.S_OPEN_PET_MALL", p.mallMsg(now))
+	s.SendExt("MALL_PTO.S_OPEN_PET_MALL", s.recruitMallMsg(p, now))
 }
 
 func typeList(l []int32) []xym.Msg {
@@ -279,8 +287,17 @@ var tequanGifts = func() []int {
 	return out
 }()
 
+// gongheGifts：VIP1–15 恭贺礼包（道具 10027–10041，说明「仅限 VIPn 贵宾购买一次的超值礼包」；VIP 特权说明
+// 「可购买 VIPn 恭贺礼包及每周福利礼包」）。每个一辈子只能买一次，不占每周一个周礼包的名额；价格同周礼包（估计）。
+const gongheBase = 10026
+
+func isGonghe(t int) bool { return t > gongheBase && t <= gongheBase+15 }
+
 // tequanVip 是礼包对应的 VIP 档次。
 func tequanVip(t int) int {
+	if isGonghe(t) {
+		return t - gongheBase
+	}
 	if t >= 11239 {
 		return t - 11238
 	}
@@ -317,6 +334,14 @@ func (s *Session) tequanMsg(p *Player) {
 	m := p.mall(time.Now())
 	week := weekKey(time.Now())
 	items := []xym.Msg{}
+	for t := gongheBase + 1; t <= gongheBase+15; t++ { // 恭贺礼包在前，买过的显示已售罄
+		if gamedata.Items[t] == nil {
+			continue
+		}
+		v := tequanVip(t)
+		items = append(items, xym.Msg{"type": t, "base_price": 300 * v, "price": 100 * v, "discount_price": 100 * v,
+			"left_amount": b2i(!slices.Contains(m.Gonghe, t))})
+	}
 	for _, t := range tequanGifts {
 		if gamedata.Items[t] == nil {
 			continue
@@ -335,7 +360,8 @@ func (s *Session) tequanMsg(p *Player) {
 // onBuyGift：买特权礼包（VIP 档次够、本周这一种还没买过、元宝够），礼包进背包。
 func onBuyGift(s *Session, p *Player, m xym.Msg) {
 	t := int(m["type"].(int64))
-	if !slices.Contains(tequanGifts, t) || gamedata.Items[t] == nil {
+	gonghe := isGonghe(t)
+	if !gonghe && !slices.Contains(tequanGifts, t) || gamedata.Items[t] == nil {
 		s.retMsg("没有这个礼包。")
 		return
 	}
@@ -345,7 +371,10 @@ func onBuyGift(s *Session, p *Player, m xym.Msg) {
 	case s.role.VIP < v:
 		s.retMsg(fmt.Sprintf("需要 VIP%d 才能购买。", v))
 		return
-	case mall.GiftWeek[0] == week:
+	case gonghe && slices.Contains(mall.Gonghe, t):
+		s.retMsg("这个恭贺礼包已经买过了，每个只能购买一次。")
+		return
+	case !gonghe && mall.GiftWeek[0] == week:
 		s.retMsg("本周已经购买过周礼包了。")
 		return
 	}
@@ -360,7 +389,11 @@ func onBuyGift(s *Session, p *Player, m xym.Msg) {
 		s.retMsg(fmt.Sprintf("元宝不足：需要 %d 元宝。", cost))
 		return
 	}
-	mall.GiftWeek[0] = week
+	if gonghe {
+		mall.Gonghe = append(mall.Gonghe, t)
+	} else {
+		mall.GiftWeek[0] = week
+	}
 	delta := &bagDelta{items: p.addItem(t, 1)}
 	delta.gains = append(delta.gains, gain{rtItem, t, 1})
 	p.saveLog(s)

@@ -35,10 +35,13 @@ func init() {
 	Handle("PET_PTO.C_ADD_PET_POINT", onAddPetPoint)
 	Handle("PET_PTO.C_REAL_ADD_POINT", func(s *Session, p *Player, m xym.Msg) {
 		pet := p.petByNpc(int32(m["npcnum"].(int64)))
+		// 协议锁 LOCK = "PET_PTO.S_UPDATE_PET"，pet_mgr 另外在 S_OPEN_POINT_PANEL 上挂了回调：两个都回。
 		if pet == nil {
+			s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0})
 			s.SendExt("PET_PTO.S_OPEN_POINT_PANEL", xym.Msg{})
 			return
 		}
+		s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0, "pets": []xym.Msg{p.petFull(pet)}})
 		s.pointPanel(p, pet)
 	})
 	Handle("PET_PTO.C_CHANGE_PET_LOCK", func(s *Session, p *Player, m xym.Msg) {
@@ -77,13 +80,19 @@ func (s *Session) pointPanel(p *Player, pet *Pet) {
 }
 
 // onAddPetPoint：用 attadd+1 颗战力丹（或 hpadd+1 颗气血丹）培养一次，回背包变化 + S_UPDATE_PET + S_OPEN_POINT_PANEL。
+//
+// 注意 auto/proto.lua 里 C_ADD_PET_POINT 的协议锁是 LOCK = "PET_PTO.S_CONFIRM_ADD_POINT"：net.send_prot 发包时
+// signal.regLock 打开全屏透明的 UtilsLoadingView（吞掉所有点击，包括返回键），只有收到 S_CONFIRM_ADD_POINT 才解锁，
+// 否则要等 10 秒「连接超时」。所以无论成功、失败还是护法不存在，都要回一个 S_CONFIRM_ADD_POINT（pet_mgr 的处理函数是空的）。
 func onAddPetPoint(s *Session, p *Player, m xym.Msg) {
 	pet := p.petByNpc(int32(m["npcnum"].(int64)))
 	typ := int(m["type"].(int64))
 	if pet == nil {
 		s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0})
+		s.SendExt("PET_PTO.S_CONFIRM_ADD_POINT", xym.Msg{"hpbase": 0, "hpnew": 0, "atbase": 0, "atnew": 0})
 		return
 	}
+	att0, hp0 := p.petStats(pet)
 	var cnt *int
 	switch typ {
 	case pointAttItem:
@@ -91,10 +100,13 @@ func onAddPetPoint(s *Session, p *Player, m xym.Msg) {
 	case pointHPItem:
 		cnt = &pet.HPAdd
 	default: // 旧版普通 / 精心培养：回一个不变的预览解锁
-		att, hp := p.petStats(pet)
-		s.SendExt("PET_PTO.S_CONFIRM_ADD_POINT", xym.Msg{"hpbase": hp, "hpnew": hp, "atbase": att, "atnew": att})
+		s.SendExt("PET_PTO.S_CONFIRM_ADD_POINT", xym.Msg{"hpbase": hp0, "hpnew": hp0, "atbase": att0, "atnew": att0})
 		return
 	}
+	defer func() { // 解协议锁（见上）
+		att, hp := p.petStats(pet)
+		s.SendExt("PET_PTO.S_CONFIRM_ADD_POINT", xym.Msg{"hpbase": hp0, "hpnew": hp, "atbase": att0, "atnew": att})
+	}()
 	need := int32(*cnt + 1)
 	switch {
 	case *cnt >= pointMax:

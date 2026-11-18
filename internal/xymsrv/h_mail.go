@@ -1,6 +1,7 @@
 package xymsrv
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"slices"
@@ -33,13 +34,13 @@ const (
 
 // MailSpec 是要发出的一封邮件。Items 的键是奖励编码（WP10317、DZ25001…），值是数量。
 type MailSpec struct {
-	Title string
-	Text  string
-	Gold  int32
-	Cash  int32
-	Soul  int32
-	Items map[string]int32
-	Star  bool
+	Items map[string]int32 `json:"items,omitempty"`
+	Title string           `json:"title"`
+	Text  string           `json:"text"`
+	Gold  int32            `json:"gold"`
+	Cash  int32            `json:"cash"`
+	Soul  int32            `json:"soul"`
+	Star  bool             `json:"star"`
 }
 
 func (spec MailSpec) rewards() []MailReward {
@@ -68,9 +69,6 @@ func (spec MailSpec) rewards() []MailReward {
 
 // SendMail 给 to（0 = 全服所有角色）发一封邮件，返回发出的封数。在线的玩家立刻刷新未读数。
 func (srv *Server) SendMail(to int32, spec MailSpec) (int, error) {
-	if strings.TrimSpace(spec.Title) == "" {
-		return 0, fmt.Errorf("title is empty")
-	}
 	var uids []int32
 	if to == 0 {
 		srv.roles.mu.Lock()
@@ -79,25 +77,62 @@ func (srv *Server) SendMail(to int32, spec MailSpec) (int, error) {
 		}
 		srv.roles.mu.Unlock()
 	} else {
-		if srv.roles.Get(to) == nil {
-			return 0, fmt.Errorf("no role %d", to)
-		}
 		uids = []int32{to}
 	}
-	now := time.Now().Unix()
-	srv.social.do(func() bool {
-		so := srv.social
-		for _, uid := range uids {
-			so.MailSeq++
-			l := append(so.Mails[uid], &Mail{Idx: so.MailSeq, Title: spec.Title, Text: spec.Text,
-				Rewards: spec.rewards(), Time: now, Star: spec.Star})
-			if len(l) > maxMails {
-				l = trimMails(l)
-			}
-			so.Mails[uid] = l
+	return srv.sendMailToUIDs(uids, spec)
+}
+
+func (srv *Server) sendMailToUIDs(uids []int32, spec MailSpec) (int, error) {
+	if strings.TrimSpace(spec.Title) == "" {
+		return 0, fmt.Errorf("title is empty")
+	}
+	uids = slices.Clone(uids)
+	slices.Sort(uids)
+	uids = slices.Compact(uids)
+	for _, uid := range uids {
+		if uid <= 0 || srv.roles.Get(uid) == nil {
+			return 0, fmt.Errorf("no role %d", uid)
 		}
-		return len(uids) > 0
-	})
+	}
+	if len(uids) == 0 {
+		return 0, nil
+	}
+	now := time.Now().Unix()
+	so := srv.social
+	so.mu.Lock()
+	so.init()
+	oldSeq := so.MailSeq
+	oldMail := make(map[int32][]*Mail, len(uids))
+	rewards := spec.rewards()
+	for _, uid := range uids {
+		oldMail[uid] = so.Mails[uid]
+		so.MailSeq++
+		l := append(slices.Clone(so.Mails[uid]), &Mail{Idx: so.MailSeq, Title: spec.Title, Text: spec.Text,
+			Rewards: slices.Clone(rewards), Time: now, Star: spec.Star})
+		so.Mails[uid] = trimMails(l)
+	}
+	var err error
+	if so.st != nil {
+		var data []byte
+		data, err = json.Marshal(so)
+		if err == nil {
+			err = so.st.SaveGlobal(string(globalSocial), data)
+		}
+	}
+	if err != nil {
+		so.MailSeq = oldSeq
+		for _, uid := range uids {
+			if oldMail[uid] == nil {
+				delete(so.Mails, uid)
+			} else {
+				so.Mails[uid] = oldMail[uid]
+			}
+		}
+	}
+	so.mu.Unlock()
+	if err != nil {
+		return 0, fmt.Errorf("save mail: %w", err)
+	}
 	for _, uid := range uids {
 		if s := srv.sessionOf(uid); s != nil {
 			s.sendMailNum()
@@ -127,6 +162,11 @@ func init() {
 }
 
 func (s *Session) sendMailNum() {
+	// Authentication binds the session before role loading completes. Scheduler
+	// notifications must wait until login has published the role pointer.
+	if !s.inGame.Load() {
+		return
+	}
 	unreward, unread := 0, 0
 	s.srv.social.do(func() bool {
 		for _, m := range s.srv.social.Mails[s.role.UID] {
@@ -175,16 +215,19 @@ func onReadMail(s *Session, p *Player, m xym.Msg) {
 }
 
 // onClaimMail：领取附件（idx 0 = 全部）。元宝 / 银两 / 魂值进人物属性，其余按奖励编码进背包。
+// 领取成功会记审计流水（gm.log「mail claim」），便于查谁领了哪封 GM 福利。
 func onClaimMail(s *Session, p *Player, m xym.Msg) {
 	idx := int32(m["idx"].(int64))
 	var got []MailReward
 	var done []int32
+	var claims []map[string]any
 	s.srv.social.do(func() bool {
 		for _, ml := range s.srv.social.Mails[s.role.UID] {
 			if (idx == 0 || ml.Idx == idx) && len(ml.Rewards) > 0 && !ml.Got {
 				ml.Got, ml.Read = true, true
 				got = append(got, ml.Rewards...)
 				done = append(done, ml.Idx)
+				claims = append(claims, map[string]any{"idx": ml.Idx, "title": ml.Title, "rewards": ml.Rewards, "reward_details": opsRewardDetails(ml.Rewards), "grant_rule": ml.GrantRule, "grant_day": ml.GrantDay, "sent_at": ml.Time})
 			}
 		}
 		return len(done) > 0
@@ -192,6 +235,9 @@ func onClaimMail(s *Session, p *Player, m xym.Msg) {
 	if len(done) == 0 {
 		s.retMsg("没有可以领取的附件。")
 		return
+	}
+	if b, err := json.Marshal(map[string]any{"uid": s.role.UID, "name": s.role.Name, "mails": claims}); err == nil {
+		logGMEvent(s.srv.cfg.GMLog, "mail claim", "uid:"+strconv.Itoa(int(s.role.UID)), 200, string(b))
 	}
 	var gold, cash, soul int32
 	delta := &bagDelta{}
@@ -218,6 +264,11 @@ func onClaimMail(s *Session, p *Player, m xym.Msg) {
 	for _, c := range [][2]int32{{mailGold, gold}, {mailCash, cash}, {mailSoul, soul}} {
 		if c[1] > 0 {
 			list = append(list, xym.Msg{"rtype": rtItem, "type": c[0], "count": c[1]})
+		}
+	}
+	if s.srv.cfg.EnableGMOps {
+		if err := s.srv.ops.audit(OpsEvent{Kind: "mail_claim", UID: s.role.UID, Name: s.role.Name, Day: today(), Status: "processed", Data: claims}); err != nil {
+			s.logErr("mail claim audit", err)
 		}
 	}
 	s.SendExt("ETC_PTO.S_REWARD_MSG", rewardMsg(1, list))
