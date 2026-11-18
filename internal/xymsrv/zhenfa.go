@@ -85,10 +85,19 @@ func (p *Player) zfFightPoint() int {
 // simulate 打一场带阵法的战斗：我方用 p 的阵法，敌方用 foe（玩家对手的阵法快照，打怪为空）。
 // 阵法显示参数记在会话上，发 S_FIGHT_RECORD 时补进 otherparam（session.go SendExt）。
 func (s *Session) simulate(p *Player, team1, team2 []*battle.Fighter, leaders [2]int32, foe battle.Formation, rng *rand.Rand) battle.Result {
-	return s.simulateWith(team1, team2, battle.Options{Leaders: leaders, Formations: [2]battle.Formation{p.formation(), foe}}, rng)
+	return s.simulateVersus(p, team1, team2, leaders, foe, 0, rng)
+}
+
+// simulateVersus keeps the initiating player on side 0. The engine compares
+// opposing speed, then prestige, then gives an exact tie to the initiator.
+func (s *Session) simulateVersus(p *Player, team1, team2 []*battle.Fighter, leaders [2]int32, foe battle.Formation, foePrestige int, rng *rand.Rand) battle.Result {
+	return s.simulateWith(team1, team2, battle.Options{Leaders: leaders, Formations: [2]battle.Formation{p.formation(), foe}, Prestige: [2]int{s.prestige(), foePrestige}}, rng)
 }
 
 func (s *Session) simulateWith(team1, team2 []*battle.Fighter, opts battle.Options, rng *rand.Rand) battle.Result {
+	if opts.Prestige[0] == 0 && s.role != nil {
+		opts.Prestige[0] = s.prestige()
+	}
 	res := battle.SimulateWith(team1, team2, opts, rng)
 	s.zfParam = res.ZfParam
 	return res
@@ -153,7 +162,7 @@ func (z *ZhenfaState) full() bool {
 }
 
 // switchOn 是本服打开 / 改动的功能开关（覆盖官方抓包 static.json 里的 quest_switch）。
-var switchOn = map[string]int{"zhenfa": 1}
+var switchOn = map[string]int{"zhenfa": 1, "liexi": 1} // liexi：时空裂隙（活动栏入口，dao_mgr TEMPORAL_RIFT_ON）
 
 func init() {
 	Handle("ZHENFA_PTO.C_OPEN_ALL_ZHENFA", func(s *Session, p *Player, m xym.Msg) { s.zfOpen(p) })
@@ -185,8 +194,8 @@ func (s *Session) zfOpen(p *Player) {
 
 // zfReady：等级够才能操作（不够时提示并回界面数据解锁）。
 func (s *Session) zfReady(p *Player) bool {
-	if s.role.Grade < zfGrade {
-		s.retMsg(fmt.Sprintf("阵法于%d级开放。", zfGrade))
+	if s.role.Grade+s.role.XGrade < zfGrade {
+		s.retMsg(fmt.Sprintf("人物等级与巅峰等级之和达到%d级开放阵法。", zfGrade))
 		s.zfOpen(p)
 		return false
 	}

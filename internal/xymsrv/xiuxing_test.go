@@ -74,6 +74,12 @@ func TestXiuxing(t *testing.T) {
 			}
 		}
 	}
+	for i, q := range p.Xiuxing.Qiyu { // 挑战输了的放弃：4 个奇遇都完成才能结束（用户规则）
+		if !q.Done {
+			c.sendExt("XIUXING_PTO.C_QIYU_KEY_PRESS", xym.Msg{"index": int64(i + 1), "key": "放弃", "param": int64(0)})
+			c.untilSkipMsg(t, "XIUXING_PTO.S_OPEN_XIUXING")
+		}
+	}
 	cash := srv.roles.Get(p.UID).Cash
 	c.sendExt("XIUXING_PTO.C_END_XIUXING", nil)
 	got = c.until(t, "XIUXING_PTO.S_OPEN_XIUXING")
@@ -138,6 +144,11 @@ func TestXiuxingJieyuanTongxiu(t *testing.T) {
 		}
 		c.sendExt("XIUXING_PTO.C_QIYU_KEY_PRESS", xym.Msg{"index": int64(1), "key": key, "param": int64(0)})
 		c.until(t, "XIUXING_PTO.S_OPEN_XIUXING")
+		now = now.Add(time.Hour) // 4 个奇遇都出现、剩下的放弃，才能结束修行
+		for idx := int64(2); idx <= xxTicks; idx++ {
+			c.sendExt("XIUXING_PTO.C_QIYU_KEY_PRESS", xym.Msg{"index": idx, "key": "放弃", "param": int64(0)})
+			c.untilSkipMsg(t, "XIUXING_PTO.S_OPEN_XIUXING")
+		}
 		c.sendExt("XIUXING_PTO.C_END_XIUXING", nil)
 		c.until(t, "XIUXING_PTO.S_OPEN_XIUXING")
 		now = now.Add(time.Hour)
@@ -152,6 +163,35 @@ func TestXiuxingJieyuanTongxiu(t *testing.T) {
 	run(qyTongxiu, "同修")
 	if !slices.Contains(pet.Together, rid) || p.Xiuxing.Tongxiu != xxTongxiuStep || p.itemCount(tongxiuStone) != 0 {
 		t.Fatalf("tongxiu: together %v value %d", pet.Together, p.Xiuxing.Tongxiu)
+	}
+
+	// 6 缘 5 星护法（如李淳风 15032，无 extend_relate，自带缘分 2186 含 together_npet）点同修按钮派出修行，
+	// 必出同修奇遇并清零「已开启」状态，完成后 2186 写入 pet.Together。
+	const lcfType, lcfRid = 15032, 2186
+	p.mu.Lock()
+	lcf := p.petByType(lcfType)
+	if lcf == nil {
+		lcf = p.addPet(lcfType)
+	}
+	p.Xiuxing.Tongxiu = 100
+	p.addItem(tongxiuStone, 1)
+	p.mu.Unlock()
+	c.sendExt("XIUXING_PTO.C_OPEN_BAODI", xym.Msg{"type": int64(qyTongxiu)})
+	c.until(t, "XIUXING_PTO.S_OPEN_XIUXING")
+	c.sendExt("XIUXING_PTO.C_START_XIUXING", xym.Msg{"fighter": []xym.Msg{{"type": int64(lcfType)}}})
+	c.until(t, "XIUXING_PTO.S_OPEN_XIUXING")
+	if p.Xiuxing.TongxiuOn || p.Xiuxing.Tongxiu != xxTongxiuStep {
+		t.Fatalf("builtin tongxiu baodi not consumed: on=%v val=%d", p.Xiuxing.TongxiuOn, p.Xiuxing.Tongxiu)
+	}
+	now = now.Add(16 * time.Minute)
+	c.sendExt("XIUXING_PTO.C_OPEN_QIYU", xym.Msg{"index": int64(1)})
+	if om := c.expectExt("XIUXING_PTO.S_OPEN_QIYU"); num(om, "type") != qyTongxiu {
+		t.Fatalf("first qiyu %v, want type %d", om, qyTongxiu)
+	}
+	c.sendExt("XIUXING_PTO.C_QIYU_KEY_PRESS", xym.Msg{"index": int64(1), "key": "同修", "param": int64(0)})
+	c.until(t, "XIUXING_PTO.S_OPEN_XIUXING")
+	if !slices.Contains(lcf.Together, lcfRid) || p.itemCount(tongxiuStone) != 0 {
+		t.Fatalf("builtin tongxiu: together %v", lcf.Together)
 	}
 }
 
@@ -170,5 +210,26 @@ func TestXiuxingNeedStone(t *testing.T) {
 	c.sendExt("XIUXING_PTO.C_QIYU_KEY_PRESS", xym.Msg{"index": int64(1), "key": "结缘", "param": int64(0)})
 	if m := c.until(t, "ETC_PTO.S_RET_MSG")["ETC_PTO.S_RET_MSG"]; !strings.Contains(m["msg"].(string), "结缘石不足") || x.Qiyu[0].Done {
 		t.Fatalf("msg %v done %v", m, x.Qiyu[0].Done)
+	}
+}
+
+// TestXiuxingEndNeedsAllQiyu：奇遇没出满 / 没全部完成时不能结束修行（用户规则）。
+func TestXiuxingEndNeedsAllQiyu(t *testing.T) {
+	now := time.Date(2026, 10, 19, 10, 0, 0, 0, time.Local)
+	old := xxNow
+	xxNow = func() time.Time { return now }
+	t.Cleanup(func() { xxNow = old })
+	c, p, srv := actWorld(t, "xxend")
+	srv.roles.Update(p.UID, func(ro *Role) bool { ro.TPoint = 60; return true })
+	p.mu.Lock()
+	typ := p.Pets[0].Type
+	p.mu.Unlock()
+	c.sendExt("XIUXING_PTO.C_START_XIUXING", xym.Msg{"fighter": []xym.Msg{{"type": int64(typ)}}})
+	c.until(t, "XIUXING_PTO.S_OPEN_XIUXING")
+	now = now.Add(20 * time.Minute)
+	c.sendExt("XIUXING_PTO.C_END_XIUXING", nil)
+	got := c.untilSkipMsg(t, "XIUXING_PTO.S_OPEN_XIUXING")
+	if num(got["XIUXING_PTO.S_OPEN_XIUXING"], "state") == 0 {
+		t.Fatal("ended before all qiyu done")
 	}
 }

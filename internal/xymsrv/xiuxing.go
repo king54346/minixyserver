@@ -36,16 +36,17 @@ import (
 // 人物缘，完成同修奇遇可使护法10%加成的人物缘进阶」「每次修行增加20%结缘值，结缘值满时，可点击结缘按钮，下次
 // 派出可结缘护法修行必出结缘奇遇」「每次修行增加15%同修值」）：
 //   - 可结缘：护法有 extend_relate（gamedata.ExtendRelates）且还没结缘；结缘奇遇（类型 5）完成后 Pet.Combine 加上它；
-//   - 可同修：已结缘、那条缘分有 together_npet 且还没同修；同修奇遇（类型 7）完成后 Pet.Together 加上它（relate.go）；
+//   - 可同修：护法自带缘分（PetInfo.Relate）或已结缘（Pet.Combine）里有 together_npet 且还没同修；同修奇遇（类型 7）完成后
+//     Pet.Together 加上它（relate.go）；
 //   - 每次开始修行结缘值 +20、同修值 +15（满 100）；满了点按钮（C_OPEN_BAODI{type 5 / 7}）记下，下次派出有可结缘 /
 //     可同修的护法时第一个奇遇必是它，用掉后值清零。
 // 估计：没点按钮时每个奇遇 10% 概率出结缘 / 同修奇遇（派出的护法里有可结缘 / 可同修的才会出）。
 
 const (
-	xxTime     = 3600
-	xxTick     = 900 // 每 15 分钟一次银两 / 奇遇
+	xxTime     = 1800 // 用户：时间减半（客户端说明写的 60 分钟）
+	xxTick     = 450  // 每 7.5 分钟一次银两 / 奇遇（4 次）
 	xxTicks    = xxTime / xxTick
-	xxDaily    = 3
+	xxDaily    = 8 // 用户：每天 8 次（客户端说明写的 3 次）
 	xxCost     = 5 // 体力
 	xxMaxPets  = 3
 	xxWeekPets = 3
@@ -85,45 +86,49 @@ type XQiyu struct {
 
 // XiuxingState 是修行存档（Player.Xiuxing）。
 type XiuxingState struct {
-	Day    string   `json:"day"`
-	Used   int      `json:"used"`            // 今日已修行次数
-	Start  int64    `json:"start,omitempty"` // 本次开始时间（0 = 未开始）
-	Pets   []int32  `json:"pets,omitempty"`  // 派出的护法类型
-	Qiyu   []*XQiyu `json:"qiyu,omitempty"`
-	Seed   uint64   `json:"seed,omitempty"`
-	PerPay int32    `json:"per_pay,omitempty"` // 每 15 分钟的银两
-	// 结缘值 / 同修值（%，满 100 可点按钮）与按钮是否已按下（下次必出）；不随天数清零。
-	Jieyuan   int  `json:"jieyuan,omitempty"`
-	Tongxiu   int  `json:"tongxiu,omitempty"`
-	JieyuanOn bool `json:"jieyuan_on,omitempty"`
-	TongxiuOn bool `json:"tongxiu_on,omitempty"`
+	Day  string   `json:"day"`
+	Pets []int32  `json:"pets,omitempty"` // 派出的护法类型
+	Qiyu []*XQiyu `json:"qiyu,omitempty"`
 	// 本次修行：可出的结缘 / 同修奇遇（开始时按派出的护法算好）与必出的（按了按钮的）
 	YuanCand []*XQiyu `json:"yuan_cand,omitempty"`
 	Forced   []*XQiyu `json:"forced,omitempty"`
+	Used     int      `json:"used"`            // 今日已修行次数
+	Start    int64    `json:"start,omitempty"` // 本次开始时间（0 = 未开始）
+	Seed     uint64   `json:"seed,omitempty"`
+	// 结缘值 / 同修值（%，满 100 可点按钮）与按钮是否已按下（下次必出）；不随天数清零。
+	Jieyuan   int   `json:"jieyuan,omitempty"`
+	Tongxiu   int   `json:"tongxiu,omitempty"`
+	PerPay    int32 `json:"per_pay,omitempty"` // 每 15 分钟的银两
+	JieyuanOn bool  `json:"jieyuan_on,omitempty"`
+	TongxiuOn bool  `json:"tongxiu_on,omitempty"`
 }
 
 // yuanCands 是派出的护法里可结缘 / 可同修的（每张卡结缘、同修各至多一条）。
-// 之前每张卡只取第一条可用的缘分：卡上还有没结缘的缘分时，已结缘那条永远出不了同修奇遇，同修值满 100 按了按钮
-// 也一直不触发、不清零（用户报）。
+// 同修既覆盖已结缘的扩展人物缘（Pet.Combine），也覆盖 5 星护法自带的含 together_npet 的人物缘（PetInfo.Relate，如李淳风
+// 「轮回有道」等；PetDetailView.isActiveTogetherRelate 对所有 relate 均判定 together_relate）。
 func (p *Player) yuanCands(types []int32) []*XQiyu {
 	var out []*XQiyu
 	for _, t := range types {
-		pet := p.petByType(t)
-		if pet == nil {
+		pi := gamedata.Pets[t]
+		if pi == nil {
 			continue
 		}
-		var jy, tx bool
-		for _, rid := range gamedata.ExtendRelates[t] {
-			switch {
-			case !slices.Contains(pet.Combine, rid):
-				if !jy {
-					jy = true
+		// 同类型可能有多张卡：任一张还没结缘 / 同修就算（开奇遇时 xxGive 也会对同类型的卡逐张判断）
+		jy, tx := false, false
+		for _, pet := range p.Pets {
+			if pet.Type != t {
+				continue
+			}
+			for _, rid := range gamedata.ExtendRelates[t] {
+				if !jy && !slices.Contains(pet.Combine, rid) {
 					out = append(out, &XQiyu{Type: qyJieyuan, Kind: "jieyuan", Pet: t, Rid: rid})
+					jy = true
 				}
-			case !slices.Contains(pet.Together, rid) && gamedata.Relates[rid] != nil && len(gamedata.Relates[rid].TogetherNPet) > 0:
-				if !tx {
-					tx = true
+			}
+			for _, rid := range append(slices.Clone(pet.Combine), pi.Relate...) {
+				if !tx && !slices.Contains(pet.Together, rid) && gamedata.Relates[rid] != nil && len(gamedata.Relates[rid].TogetherNPet) > 0 {
 					out = append(out, &XQiyu{Type: qyTongxiu, Kind: "tongxiu", Pet: t, Rid: rid})
+					tx = true
 				}
 			}
 		}
@@ -327,23 +332,45 @@ func onXXStart(s *Session, p *Player, m xym.Msg) {
 		x.Used++
 		x.Start, x.Pets, x.Qiyu, x.Seed = now, pets, nil, uint64(now)^uint64(p.UID)<<20
 		x.PerPay = int32(1000 + 100*s.role.Grade)
-		// 结缘 / 同修：按了按钮且这次派出了可结缘 / 可同修的护法 → 前几个奇遇必出，用掉后值清零；之后再加本次的值
+		// 结缘 / 同修保底：若按下了开启按钮，本次必定消耗保底并清零（若派出护法没有未完缘分也生成一个兜底奇遇）
 		x.YuanCand, x.Forced = p.yuanCands(pets), nil
 		for _, k := range []struct {
 			kind string
 			on   *bool
 			val  *int
-		}{{"jieyuan", &x.JieyuanOn, &x.Jieyuan}, {"tongxiu", &x.TongxiuOn, &x.Tongxiu}} {
-			if !*k.on {
-				continue
-			}
-			if i := slices.IndexFunc(x.YuanCand, func(q *XQiyu) bool { return q.Kind == k.kind }); i >= 0 {
-				x.Forced = append(x.Forced, x.YuanCand[i])
+			step int
+		}{{"jieyuan", &x.JieyuanOn, &x.Jieyuan, xxJieyuanStep}, {"tongxiu", &x.TongxiuOn, &x.Tongxiu, xxTongxiuStep}} {
+			if *k.on {
 				*k.on, *k.val = false, 0
+				if i := slices.IndexFunc(x.YuanCand, func(q *XQiyu) bool { return q.Kind == k.kind }); i >= 0 {
+					x.Forced = append(x.Forced, x.YuanCand[i])
+				} else {
+					for _, t := range pets {
+						pi := gamedata.Pets[t]
+						if pi == nil {
+							continue
+						}
+						if k.kind == "jieyuan" && len(gamedata.ExtendRelates[t]) > 0 {
+							x.Forced = append(x.Forced, &XQiyu{Type: qyJieyuan, Kind: "jieyuan", Pet: t, Rid: gamedata.ExtendRelates[t][0]})
+							break
+						} else if k.kind == "tongxiu" {
+							var targetRid int32
+							for _, rid := range append(slices.Clone(gamedata.ExtendRelates[t]), pi.Relate...) {
+								if r := gamedata.Relates[rid]; r != nil && len(r.TogetherNPet) > 0 {
+									targetRid = rid
+									break
+								}
+							}
+							if targetRid != 0 {
+								x.Forced = append(x.Forced, &XQiyu{Type: qyTongxiu, Kind: "tongxiu", Pet: t, Rid: targetRid})
+								break
+							}
+						}
+					}
+				}
 			}
+			*k.val = min(100, *k.val+k.step)
 		}
-		x.Jieyuan = min(100, x.Jieyuan+xxJieyuanStep)
-		x.Tongxiu = min(100, x.Tongxiu+xxTongxiuStep)
 		p.saveLog(s)
 	}
 	s.xxOpen(p)
@@ -353,6 +380,18 @@ func onXXStart(s *Session, p *Player, m xym.Msg) {
 func onXXEnd(s *Session, p *Player, m xym.Msg) {
 	x := p.xiuxing()
 	if x.Start != 0 {
+		// 4 个奇遇都出现并完成（领取 / 战胜 / 购买 / 放弃都算）之后才能结束修行、再开下一次（用户规则）
+		week, _ := xxWeek(xxNow())
+		x.rollQiyu(x.ticks(xxNow().Unix()), week)
+		done := len(x.Qiyu) >= xxTicks
+		for _, q := range x.Qiyu {
+			done = done && q.Done
+		}
+		if !done {
+			s.sendMsg("修行还未结束：要等 4 个奇遇都出现并完成后，才能结束修行。")
+			s.xxOpen(p)
+			return
+		}
 		cash := x.PerPay * int32(x.ticks(xxNow().Unix()))
 		x.Start, x.Qiyu = 0, nil
 		p.saveLog(s)
@@ -470,10 +509,11 @@ func onXXKey(s *Session, p *Player, m xym.Msg) {
 		}
 		s.sendDelta(p, &bagDelta{items: ch, removed: rm})
 		q.Done = true
+		pi := gamedata.Pets[pet.Type]
 		if q.Kind == "jieyuan" && !slices.Contains(pet.Combine, q.Rid) {
 			pet.Combine = append(pet.Combine, q.Rid)
 		}
-		if q.Kind == "tongxiu" && slices.Contains(pet.Combine, q.Rid) && !slices.Contains(pet.Together, q.Rid) {
+		if q.Kind == "tongxiu" && (slices.Contains(pet.Combine, q.Rid) || (pi != nil && slices.Contains(pi.Relate, q.Rid))) && !slices.Contains(pet.Together, q.Rid) {
 			pet.Together = append(pet.Together, q.Rid)
 		}
 		p.saveLog(s)

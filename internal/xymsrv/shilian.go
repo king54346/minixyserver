@@ -201,7 +201,9 @@ func (p *Player) slTeam(r *slRun) []*battle.Fighter {
 	team, _ := p.dyTeam(nil)
 	for _, f := range team {
 		f.Att = int32(int64(f.Att) * int64(100+r.Add[1]) / 100)
+		baseHP := int32(int64(f.HP-f.PanelSetHP) * int64(100+r.Add[2]) / 100)
 		f.HP = int32(int64(f.HP) * int64(100+r.Add[2]) / 100)
+		f.PanelSetHP = f.HP - baseHP
 		f.MaxHP = f.HP
 		f.MagicUp, f.HealUp = r.Add[3], r.Add[4]
 	}

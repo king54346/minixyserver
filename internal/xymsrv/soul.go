@@ -13,6 +13,7 @@ import (
 //   - 融魂 PET_PTO.C_DROP_PET_SOUL{pets[npcnum], souls[type, amount]}：把护法 / 魂魄融成魂值。护法给
 //     total_soul_exp = 已花在境界上的魂值 + PetSoulPoint[星级]（2 / 8 / 18 / 60 / 100），魂魄每个
 //     SoulSoulPoint[星级]（1–5）。回 S_UPDATE_CARD（客户端等它）、S_REMOVE_PET、S_ATTR_UPDATE soulexp。
+//     融魂移除护法本体，保留已并入的同名数，重新获得本体时恢复。
 //
 // 估计：上阵 / 加锁的护法不收；本服按客户端算的数给魂值。
 var (
@@ -26,6 +27,46 @@ var (
 func init() {
 	Handle("PET_PTO.C_SOUL_TO_PET", onSoulToPet)
 	Handle("PET_PTO.C_DROP_PET_SOUL", onDropPetSoul)
+	Handle("PET_PTO.C_TRANSFORM_SOUL", onTransformSoul)
+}
+
+// onTransformSoul：4 / 5 星魂魄转 3 星魂魄（护法详情「转三星」→ view/PetDetailView.lua CHunPoZhuanHuaView）。
+// C_TRANSFORM_SOUL{from_type, count} → 扣 count 个魂魄、给 count × Count 个 To 的魂魄、扣 count × Gold 元宝；
+// 回 S_UPDATE_CARD（两种魂魄）和 S_TRANSFORM_SOUL{remove_count}（界面扣掉数量，扣完关闭）。
+func onTransformSoul(s *Session, p *Player, m xym.Msg) {
+	from := int32(m["from_type"].(int64))
+	n, _ := m["count"].(int64)
+	rule, ok := gamedata.SoulTransforms[from]
+	fail := func(msg string) {
+		s.retMsg(msg)
+		s.SendExt("PET_PTO.S_TRANSFORM_SOUL", xym.Msg{"remove_count": 0})
+	}
+	switch {
+	case !ok || n <= 0:
+		fail("这种魂魄不能转化。")
+		return
+	case p.Souls[from] < int32(n):
+		fail("魂魄数量不足。")
+		return
+	}
+	cost := rule.Gold * int32(n)
+	if !s.roleUpdate(func(ro *Role) bool {
+		if ro.Gold < cost {
+			return false
+		}
+		ro.Gold -= cost
+		return true
+	}, "gold") {
+		fail("元宝不足。")
+		return
+	}
+	d := &bagDelta{}
+	p.addSoul(from, -int32(n), d)
+	p.addSoul(rule.To, rule.Count*int32(n), d)
+	p.saveLog(s)
+	s.SendExt("PET_PTO.S_UPDATE_CARD", p.soulsMsg([]int32{from, rule.To}))
+	s.SendExt("PET_PTO.S_TRANSFORM_SOUL", xym.Msg{"remove_count": n})
+	s.retMsg("魂魄转化成功。")
 }
 
 func onSoulToPet(s *Session, p *Player, m xym.Msg) {
@@ -82,6 +123,12 @@ func onDropPetSoul(s *Session, p *Player, m xym.Msg) {
 		}
 		gain += g
 		p.removePet(pet)
+		if pet.TLAdd > 0 && p.petByType(pet.Type) == nil {
+			if p.MeltedCopies == nil {
+				p.MeltedCopies = map[int32]int{}
+			}
+			p.MeltedCopies[pet.Type] = pet.TLAdd
+		}
 		removed = append(removed, xym.Msg{"npcnum": pet.NpcNum})
 	}
 	souls, _ := m["souls"].([]xym.Msg)

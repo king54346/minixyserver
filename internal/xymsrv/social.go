@@ -17,28 +17,31 @@ type Social struct {
 	mu sync.Mutex
 	st store.Store
 
-	Friends map[int32][]int32            `json:"friends"`  // uid -> 好友
-	Applies map[int32][]int32            `json:"applies"`  // uid -> 向他申请的人
-	Msgs    map[int32]map[int32][]string `json:"msgs"`     // 收信人 -> 发信人 -> 未读私信
-	GiftDay string                       `json:"gift_day"` // 礼物计数所属日期
-	Sent    map[int32][]int32            `json:"sent"`     // 今天已送：送礼人 -> 收礼人
-	Pending map[int32][]int32            `json:"pending"`  // 待领：收礼人 -> 送礼人
-	Got     map[int32]int                `json:"got"`      // 今天已领的礼物数
-	Mails   map[int32][]*Mail            `json:"mails"`
-	MailSeq int32                        `json:"mail_seq"`
+	Friends   map[int32][]int32            `json:"friends"`  // uid -> 好友
+	Applies   map[int32][]int32            `json:"applies"`  // uid -> 向他申请的人
+	Msgs      map[int32]map[int32][]string `json:"msgs"`     // 收信人 -> 发信人 -> 未读私信
+	GiftDay   string                       `json:"gift_day"` // 礼物计数所属日期
+	Sent      map[int32][]int32            `json:"sent"`     // 今天已送：送礼人 -> 收礼人
+	Pending   map[int32][]int32            `json:"pending"`  // 待领：收礼人 -> 送礼人
+	Got       map[int32]int                `json:"got"`      // 今天已领的礼物数
+	Mails     map[int32][]*Mail            `json:"mails"`
+	MailSeq   int32                        `json:"mail_seq"`
+	OpsGrants map[string]OpsGrant          `json:"ops_grants,omitempty"`
 }
 
 // Mail 是一封邮件（S_SEND_OPEN_NEW_MAIL.list 的一项）。附件：S 是奖励编码（WP20011 元宝、WP20010 银两、
 // WP<道具号>…），R 是数量；isStar 为重要邮件。
 type Mail struct {
-	Idx     int32        `json:"idx"`
-	Title   string       `json:"title"`
-	Text    string       `json:"text"`
-	Rewards []MailReward `json:"rewards,omitempty"`
-	Got     bool         `json:"got,omitempty"`
-	Read    bool         `json:"read,omitempty"`
-	Time    int64        `json:"time"`
-	Star    bool         `json:"star,omitempty"`
+	GrantRule string       `json:"grant_rule,omitempty"`
+	GrantDay  string       `json:"grant_day,omitempty"`
+	Title     string       `json:"title"`
+	Text      string       `json:"text"`
+	Rewards   []MailReward `json:"rewards,omitempty"`
+	Time      int64        `json:"time"`
+	Idx       int32        `json:"idx"`
+	Got       bool         `json:"got,omitempty"`
+	Read      bool         `json:"read,omitempty"`
+	Star      bool         `json:"star,omitempty"`
 }
 
 type MailReward struct {
@@ -48,7 +51,7 @@ type MailReward struct {
 
 func openSocial(st store.Store) *Social {
 	so := &Social{st: st}
-	loadGlobal(st, socialUID, so, "social")
+	loadGlobal(st, globalSocial, so)
 	so.init()
 	return so
 }
@@ -73,7 +76,7 @@ func (so *Social) init() {
 
 // save 写回存档；调用方持有 so.mu。
 func (so *Social) save() {
-	saveGlobal(so.st, socialUID, so, "social")
+	saveGlobal(so.st, globalSocial, so)
 }
 
 // do 在锁内执行 fn（先做跨天重置），fn 返回 true 时写回存档。

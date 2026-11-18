@@ -130,6 +130,7 @@ func (p *Player) track(ev string, n int) {
 	t := p.tasks()
 	t.Counters[ev] += n
 	t.Today[ev] += n
+	p.opsActivity(t)
 }
 
 // trackMax 把累计计数 key 提到至少 n（「完成过某图」这类只要做到一次的）。

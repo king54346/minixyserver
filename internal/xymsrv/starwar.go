@@ -80,14 +80,14 @@ type swSlot struct {
 
 // swEntry 是一位参赛者（UID 0 = 假选手）。
 type swEntry struct {
-	UID    int32             `json:"uid"`
 	Name   string            `json:"name"`
-	Grade  int               `json:"grade"`
-	Icon   int32             `json:"icon"`
 	Slots  []swSlot          `json:"slots,omitempty"`
-	Team   []*battle.Fighter `json:"team"`             // 站位 1–8
+	Team   []*battle.Fighter `json:"team"` // 站位 1–8
+	Grade  int               `json:"grade"`
 	Leader int               `json:"leader,omitempty"` // 队长位（超级星战）
-	Skill  int32             `json:"skill,omitempty"`  // 队长技
+	UID    int32             `json:"uid"`
+	Icon   int32             `json:"icon"`
+	Skill  int32             `json:"skill,omitempty"` // 队长技
 }
 
 func (e *swEntry) power() int {
@@ -199,18 +199,16 @@ type swSign struct {
 
 func swKey(ctype, ftype int) string { return strconv.Itoa(ctype) + ":" + strconv.Itoa(ftype) }
 
-// Starwar 是全服星战（存档位 starwarUID）。
+// Starwar 是全服星战（全服数据 globalStarwar）。
 type Starwar struct {
-	mu sync.Mutex
-	st store.Store
-
-	Day      string                `json:"day"`
-	Start    int64                 `json:"start"` // 今天开赛时间（Unix 秒；管理接口可以提前）
-	Super    bool                  `json:"super"`
+	st       store.Store
 	Signs    map[int32]*swSign     `json:"signs,omitempty"`
 	Brackets map[string]*swBracket `json:"brackets,omitempty"`
-
-	played bool // 本次推进打了比赛 / 发了奖（要存档）
+	Day      string                `json:"day"`
+	Start    int64                 `json:"start"` // 今天开赛时间（Unix 秒；管理接口可以提前）
+	mu       sync.Mutex
+	Super    bool `json:"super"`
+	played   bool // 本次推进打了比赛 / 发了奖（要存档）
 }
 
 // swMail 是比赛结束后要发的奖励邮件。
@@ -221,7 +219,7 @@ type swMail struct {
 
 func openStarwar(st store.Store) *Starwar {
 	w := &Starwar{st: st}
-	loadGlobal(st, starwarUID, w, "starwar")
+	loadGlobal(st, globalStarwar, w)
 	return w
 }
 
@@ -234,7 +232,7 @@ func (w *Starwar) do(fn func() bool) []swMail {
 		dirty = true
 	}
 	if dirty {
-		saveGlobal(w.st, starwarUID, w, "starwar")
+		saveGlobal(w.st, globalStarwar, w)
 	}
 	return mails
 }

@@ -15,7 +15,7 @@ import (
 // 「今日剩余求缘次数」= 8 − 已翻格数、「每日均可免费缘魂 1 次」「首次免费」、left 显示求缘珠数量）；
 // 抓包 S_OPEN_WISH 一整盘：1,3,4,3,1,2,1,5（三张 1 个 to 魂魄、一张 3 个、两张魂值、from 魂魄 1 个和 3 个各一张）。
 //
-// 估计：每盘就是这 8 张洗乱；每天第一次翻免费，其余每次 1 颗求缘珠（10059）；每天重新洗一盘；
+// 估计：每盘就是这 8 张洗乱；每天第一次翻免费，其余每次 1 颗求缘珠（10059）；每天重新选择对象并洗一盘；
 // 一盘没翻完不能重选，翻完或还没翻时可以重选护法（重选后今天这盘翻完了仍不能再翻）。
 
 const (
@@ -54,6 +54,9 @@ func (p *Player) wish(s *Session) *WishState {
 	w := p.Wish
 	if d := today(); w.Day != d {
 		w.Day, w.Free, w.Current, w.Deck = d, 1, nil, nil
+		// Yesterday's unfinished selection must not start today's board and
+		// lock the player into the old target after the first free draw.
+		w.From, w.To = 0, 0
 	}
 	if w.Deck == nil && len(w.Current) == 0 {
 		w.Deck = slices.Clone(wishDeck)
@@ -162,7 +165,7 @@ func onWishGrid(s *Session, p *Player, m xym.Msg) {
 // onWishRechoose：重选护法（一盘翻到一半不行）。客户端先关掉界面，回 S_OPEN_WISH{from_type 0} 打开选护法页。
 func onWishRechoose(s *Session, p *Player, m xym.Msg) {
 	w := p.wish(s)
-	if !w.canRechoose() {
+	if w.From != 0 && !w.canRechoose() {
 		s.retMsg("本轮求缘还没有结束，不能重选。")
 	} else {
 		w.From, w.To = 0, 0

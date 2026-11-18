@@ -27,7 +27,7 @@ import (
 //
 // 估计（待抓包校准）：升到 4 阶的灵气价 120（抓包有 20 / 90 / 150，60 来自客户端常量）、冷却时长、
 // 灵气来源（洞府系统，本服还没有，灵气恒为 0，只能付元宝）、金装数量用「曾同时拥有的最多 5 星件数」近似
-// （原服 gold_suit 是图鉴累计）。缘分 / 大缘的属性加成未实现（docs/tasks T6）。
+// （原服 gold_suit 是图鉴累计）。缘分属性计算的实现范围见 relate.go、special_relate.go。
 
 const (
 	tjTypeSuit  = 2 // CardSetView.TYPE_EQUIP

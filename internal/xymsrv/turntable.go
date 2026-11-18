@@ -20,22 +20,23 @@ import (
 // 抓包（3 盘）：1/4/7/10 格是 1–4 星装备、2/5/8/11 格是 1–4 星法术（同星一对），3/6/9 格是 2/3/4 星装备碎片，
 // 另有两格被换成幻境专属的 5 星宝物；S_SEND_SCORE{score, cur_guarantee, base_guarantee 300, free_refresh}。
 //
-// 估计：各格落点权重（1–4 星 40/28/16/8，碎片 24/16/8，专属 1，约 0.4%）；碎片 4/3/2 个；转盘每天 0 点刷新；
+// 估计：各格落点权重（1–4 星 40/28/16/8，碎片 24/16/8；5 个专属 5 星中奖几率设为 15%）；碎片 4/3/2 个；转盘每天 0 点刷新；
 // 每天第一次打开送 60 灵力（原服由活跃度换，本服未做活跃度）；宝藏幻境是 5 件专属 + 3 件 5 星装备 + 3 本
 // 5 星法术，第一次探宝免费、之后每次 100 灵力，每转一次之前拿着的宝物作废（置灰），指针只停在没作废的格子上；
 // 落到专属宝物后可免费重置（另外每天一次免费重置，对上抓包里当天首开的 free_refresh 1）。
 
 const (
-	ttCost        = 30
-	ttResetCost   = 100
-	ttGuarCost    = 100
-	ttBaseGuar    = 300
-	ttDailyScore  = 60
-	ttSlots       = 12
-	ttIconEquip   = 2
-	ttIconMagic   = 3
-	ttIconPart    = 5
-	ttExclusiveWt = 1
+	ttCost          = 30
+	ttResetCost     = 100
+	ttGuarCost      = 100
+	ttBaseGuar      = 300
+	ttDailyScore    = 60
+	ttSlots         = 12
+	ttIconEquip     = 2
+	ttIconMagic     = 3
+	ttIconPart      = 5
+	ttExclusiveWt   = 20
+	ttExclusiveRate = 15 // 幻境转盘抽中 5 星专属宝物的总概率 15%（用户要求）
 )
 
 var (
@@ -59,19 +60,18 @@ type ttCell struct {
 
 // TurntableState 是奇缘幻境存档（Player.Turntable）。
 type TurntableState struct {
-	Score    int32    `json:"score"`
-	Guar     int32    `json:"guar"` // 累计探宝次数（到 300 可进宝藏幻境）
-	Free     bool     `json:"free"` // 可免费重置
-	Day      string   `json:"day"`  // 转盘生成的日期
+	Day      string   `json:"day"` // 转盘生成的日期
+	ScoreDay string   `json:"score_day,omitempty"`
 	Cells    []ttCell `json:"cells"`
+	GuarCell []ttCell `json:"guar_cells,omitempty"`
 	Pos      int      `json:"pos"`
 	Times    int      `json:"times"` // 今天探宝次数
-	ScoreDay string   `json:"score_day,omitempty"`
-
-	InGuar   bool     `json:"in_guar,omitempty"` // 正在宝藏幻境里
-	GuarCell []ttCell `json:"guar_cells,omitempty"`
 	GuarPos  int      `json:"guar_pos,omitempty"`
 	GuarSpin int      `json:"guar_spin,omitempty"`
+	Score    int32    `json:"score"`
+	Guar     int32    `json:"guar"`              // 累计探宝次数（到 300 可进宝藏幻境）
+	Free     bool     `json:"free"`              // 可免费重置
+	InGuar   bool     `json:"in_guar,omitempty"` // 正在宝藏幻境里
 }
 
 func (p *Player) turntable(rng *rand.Rand) *TurntableState {
@@ -256,12 +256,24 @@ func onTTTurn(s *Session, p *Player, m xym.Msg) {
 		s.SendExt("TURNTABLE_PTO.S_MOVE", xym.Msg{"pos": t.Pos})
 		return
 	}
+	wantEx := rng.IntN(100) < ttExclusiveRate
 	pos := weightedPos(rng, t.Cells, func(i int, c ttCell) int {
-		if i == 0 {
+		if i == 0 || c.Exclusive != wantEx {
 			return 0
 		}
-		return c.Weight
+		if wantEx {
+			return 1
+		}
+		return max(c.Weight, 1)
 	})
+	if pos < 0 {
+		pos = weightedPos(rng, t.Cells, func(i int, c ttCell) int {
+			if i == 0 {
+				return 0
+			}
+			return max(c.Weight, 1)
+		})
+	}
 	if pos < 0 {
 		s.SendExt("TURNTABLE_PTO.S_MOVE", xym.Msg{"pos": t.Pos})
 		return

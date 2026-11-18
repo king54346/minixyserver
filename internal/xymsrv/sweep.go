@@ -44,17 +44,12 @@ func init() {
 }
 
 func onExplore(s *Session, p *Player, m xym.Msg) {
-	gid, typ := int(m["gateid"].(int64)), 0
+	gid, typ := int(m["gateid"].(int64)), s.gateViewMode
 	n := 1
 	if t, _ := m["type"].(int64); t == 1 {
 		n = sweepTimes
 	}
 	g := gamedata.Gates[gid]
-	for _, t := range []int{0, 1} {
-		if p.Prog[t] != nil && p.Prog[t].Gates[gid] > 0 {
-			typ = t
-		}
-	}
 	switch {
 	case s.role.Grade < sweepGrade:
 		s.retMsg(fmt.Sprintf("%d 级开放扫荡。", sweepGrade))
@@ -76,6 +71,7 @@ func onExplore(s *Session, p *Player, m xym.Msg) {
 				}
 				p.Prog[typ].Daily[gid] = 0
 				p.saveLog(s)
+				s.gateViewMode = typ // 确认重置前即使切过图，也沿用原扫荡模式。
 				onExplore(s, p, m)
 			})
 			return
@@ -104,7 +100,7 @@ func onExplore(s *Session, p *Player, m xym.Msg) {
 	role, err := s.srv.roles.Update(s.role.UID, func(ro *Role) bool {
 		ro.TPoint -= mode.Cost * n
 		ro.Cash += cash
-		ro.AddExp(mexp)
+		ro.GainExp(mexp)
 		return true
 	})
 	if err != nil {
@@ -115,7 +111,7 @@ func onExplore(s *Session, p *Player, m xym.Msg) {
 	var full []xym.Msg
 	for fp := 1; fp <= lineupSlots; fp++ {
 		if pet := p.petAtFightPos(fp); pet != nil {
-			pet.addExp(pexp, role.PetCap())
+			s.petGainExp(p, pet, pexp, role.PetCap())
 			full = append(full, p.petFull(pet))
 		}
 	}
@@ -131,6 +127,7 @@ func onExplore(s *Session, p *Player, m xym.Msg) {
 	s.SendExt("ETC_PTO.S_ATTR_UPDATE", xym.Msg{"attr": []xym.Msg{
 		{"name": "tpoint", "val": role.TPoint}, {"name": "grade", "val": role.Grade},
 		{"name": "exp", "val": role.Exp}, {"name": "next_exp", "val": nextExp(role.Grade)},
+		{"name": "xiuwei", "val": role.Xiuwei}, {"name": "xgrade", "val": role.XGrade},
 		{"name": "cash", "val": role.Cash},
 	}})
 	if len(full) > 0 {

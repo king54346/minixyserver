@@ -94,17 +94,17 @@ func (s *Session) treeMsg(p *Player) {
 		"bug": t.Bug, "level": t.Level, "extra_fruit": -1, "planted_nums": t.Nums})
 }
 
-// ---- 摇钱树林（种树 / 收获 / 打开时登记；存成全服数据 treeUID，重启不丢）----
+// ---- 摇钱树林（种树 / 收获 / 打开时登记；存成全服数据 globalTree，重启不丢）----
 // 之前只在内存里：服务器一重启林子就空了，要等树主自己再打开摇钱树才会出现，别人没法驻足观赏。
 
 type treeRow struct {
-	UID     int32
+	Fans    map[int32]bool
 	Name    string
 	Icon    int
 	Grade   int
 	Rich    int
+	UID     int32
 	Planted bool // 今天种着树（还没收获的也进林子）
-	Fans    map[int32]bool
 }
 
 var treeWood = struct {
@@ -122,7 +122,7 @@ func (s *Session) treeWoodLoad() {
 	}
 	treeWood.init, treeWood.st = true, st
 	rows := map[int32]*treeRow{}
-	loadGlobal(st, treeUID, &rows, "tree wood")
+	loadGlobal(st, globalTree, &rows)
 	for _, r := range rows {
 		if r.Fans == nil {
 			r.Fans = map[int32]bool{}
@@ -132,7 +132,7 @@ func (s *Session) treeWoodLoad() {
 }
 
 // treeWoodSave 在持锁时调用。
-func treeWoodSave() { saveGlobal(treeWood.st, treeUID, treeWood.rows, "tree wood") }
+func treeWoodSave() { saveGlobal(treeWood.st, globalTree, treeWood.rows) }
 
 func (s *Session) treeRegister(p *Player) {
 	t := p.tree()

@@ -3,6 +3,7 @@ package xymsrv
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -15,8 +16,16 @@ type Config struct {
 	IdleTimeout      time.Duration // 登录后多久收不到任何包就断；客户端没有心跳包，0 = 不限，只靠 TCP keepalive
 	CreateTimeout    time.Duration // 收到 S_CREATE 后等起名的时间（开场剧情 + 起名，可能很久）
 	Hotfix           []byte        // 预先编好的 S_SEND_NEW_HOTFIX_CONTENT body，nil 不发
+	HotfixBatches    [][]byte      // 多帧补丁，按文件顺序在登录成功前发完
+	PrestigeRules    PrestigeRules // 额外排行榜威望，空分档不加分
 	RecordDir        string        // 战报存档目录（records.go），空 = 不存
 	RecordDays       int           // 战报保留天数，0 = 不删
+	GMLog            string        // GM 操作审计日志文件（admin.go），空 = 只进 slog
+	NewRoleGold      int32         // New character's initial balance; never applied to existing roles.
+	NewRoleChests    int32         // Golden chests and matching keys for new inventories.
+	EnableGMOps      bool
+	GMOpsLog         string
+	DraftRewards     [10]MailSpec // 按周榜名次发放，空配置不发奖。
 }
 
 func DefaultConfig() Config {
@@ -24,17 +33,26 @@ func DefaultConfig() Config {
 }
 
 type Server struct {
-	cfg      Config
-	accounts *Accounts
-	roles    *Roles
-	players  *Players
-	social   *Social    // 好友 / 私信 / 礼物 / 邮件（social.go）
-	chat     *chatState // 聊天频道（h_chat.go）
-	dongfu   *Dongfus   // 洞府（dongfu.go）
-	ladder   *Ladder    // 论道榜（lundao.go）
-	starwar  *Starwar   // 星战（starwar.go）
-	tianti   *Tianti    // 天梯（tianti.go）
-	jiuyou   *Jiuyou    // 九幽试炼排行（jiuyou.go）
+	cfg       Config
+	accounts  *Accounts
+	guards    failGuard // 全部连接共享账号/IP失败计数
+	roles     *Roles
+	players   *Players
+	ops       *GMOps
+	gameRules *gameRules
+	opsStop   chan struct{}
+	social    *Social    // 好友 / 私信 / 礼物 / 邮件（social.go）
+	chat      *chatState // 聊天频道（h_chat.go）
+	dongfu    *Dongfus   // 洞府（dongfu.go）
+	ladder    *Ladder    // 论道榜（lundao.go）
+	starwar   *Starwar   // 星战（starwar.go）
+	tianti    *Tianti    // 天梯（tianti.go）
+	draft     *weeklyDraft
+	jiuyou    *Jiuyou // 九幽试炼排行（jiuyou.go）
+	liexi     *Liexi  // 时空竞技场积分榜（liexi_jjc.go）
+	qjRankMu  sync.Mutex
+	lrCache   lrCache      // 关卡排行（level_rank.go）
+	qjBoard   *qjRankBoard // 西天取经进度榜（qujing.go，首次用时从存档读）
 
 	nextID atomic.Uint64
 
@@ -47,23 +65,44 @@ type Server struct {
 }
 
 func NewServer(cfg Config, accounts *Accounts, roles *Roles, players *Players) *Server {
-	return &Server{cfg: cfg, accounts: accounts, roles: roles, players: players, social: openSocial(players.st), chat: newChat(),
-		dongfu: openDongfus(players.st), ladder: openLadder(players.st), starwar: openStarwar(players.st), tianti: openTianti(players.st), jiuyou: openJiuyou(players.st),
-		sessions: map[*Session]struct{}{}, online: map[int32]*Session{}}
+	roles.newRoleGold, players.newRoleChests = max(cfg.NewRoleGold, 0), max(cfg.NewRoleChests, 0)
+	srv := &Server{cfg: cfg, accounts: accounts, roles: roles, players: players, social: openSocial(players.st), chat: newChat(players.st),
+		dongfu: openDongfus(players.st), ladder: openLadder(players.st), starwar: openStarwar(players.st), tianti: openTianti(players.st), jiuyou: openJiuyou(players.st), liexi: openLiexi(players.st),
+		sessions: map[*Session]struct{}{}, online: map[int32]*Session{}, opsStop: make(chan struct{})}
+	srv.ops = newGMOps(players.st, cfg.GMOpsLog)
+	srv.gameRules = newGameRules(players.st)
+	srv.draft = openWeeklyDraft(players.st)
+	srv.tianti.srv = srv
+	return srv
 }
 
 // Serve 在 ln 上接受连接，直到 Shutdown。
 func (srv *Server) Serve(ln net.Listener) error {
+	if srv.gameRules.err != nil {
+		return fmt.Errorf("GM gameplay configuration: %w", srv.gameRules.err)
+	}
+	if srv.cfg.EnableGMOps && srv.ops.startupErr != nil {
+		return fmt.Errorf("GM operations configuration: %w", srv.ops.startupErr)
+	}
 	srv.mu.Lock()
 	if srv.closed {
 		srv.mu.Unlock()
 		return errors.New("xymsrv: server closed")
 	}
 	srv.ln = ln
+	if srv.cfg.EnableGMOps {
+		srv.wg.Add(1)
+	}
 	srv.mu.Unlock()
 	go srv.regenLoop()
 	go srv.starwarLoop()
+	go srv.ttLoop()
+	go srv.draftLoop()
 	go srv.recordsLoop()
+	go srv.watchRequests()
+	if srv.cfg.EnableGMOps {
+		go srv.gmOpsLoop()
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -104,7 +143,10 @@ func (srv *Server) Serve(ln net.Listener) error {
 // Shutdown 停止监听，断开所有会话并等它们清理完。
 func (srv *Server) Shutdown() {
 	srv.mu.Lock()
-	srv.closed = true
+	if !srv.closed {
+		srv.closed = true
+		close(srv.opsStop)
+	}
 	if srv.ln != nil {
 		srv.ln.Close()
 	}

@@ -14,11 +14,11 @@ import (
 //   - 5 星二郎神获得【背水 N】，N = 5 星天狗的同名卡数。
 // 客户端在虞姬 / 项羽（3、4 星）等卡的缘分说明里显示这条，同名卡为 0 时灰色。
 //
-// 估计：和普通缘分一样要求两人同时在出战阵容（伙伴任意星级）；获得者本身已有同族神通时取等级高的。
+// 特殊缘分只要求持有来源五星卡且同名卡数量达标，不要求伙伴上阵；同族神通取较高等级。
 
 type specialRelate struct {
 	receivers []int32 // 获得神通的护法
-	partners  []int32 // 需要同时上阵的伙伴（任意星级）
+	partners  []int32 // 伙伴的各星级类型（描述索引）
 	source    int32   // 同名卡数取自这张 5 星卡
 	base      int32   // 1 级神通号
 }
@@ -32,14 +32,9 @@ var specialRelates = []specialRelate{
 
 // applySpecialRelates 给出战阵容里满足条件的护法加上特殊缘分的神通（playerTeam 调用）。
 func (p *Player) applySpecialRelates(team []*battle.Fighter) {
-	on := map[int32]bool{}
-	for _, f := range team {
-		on[f.Icon] = true
-	}
 	for _, r := range specialRelates {
-		partner := slices.ContainsFunc(r.partners, func(t int32) bool { return on[t] })
 		src := p.petByType(r.source)
-		if !partner || src == nil || src.TLAdd <= 0 {
+		if src == nil || src.TLAdd <= 0 {
 			continue
 		}
 		id := r.base + int32(min(src.TLAdd, 10)) - 1

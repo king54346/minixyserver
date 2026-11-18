@@ -206,13 +206,13 @@ func TestSeedFrame(t *testing.T) {
 }
 
 func TestLoginFlow(t *testing.T) {
-	addr, dir := startServer(t, DefaultConfig())
+	srv, addr, dir := startServerSrv(t, DefaultConfig())
 
 	// 没有账号 → 102；注册 → S_SEND_SID + S_CREATE
 	c := dial(t, addr)
 	c.sendRaw(xym.CLogin, loginBody("alice", "pw1"))
 	c.expectFail(xym.FailNoAccount)
-	c.sendRaw(xym.CRegister, registerBody("alice", "pw1", "abcd"))
+	c.sendRaw(xym.CRegister, registerBody("alice", "pw1", "abcd1234"))
 	sid := c.expectExt("LOGIN_PTO.S_SEND_SID")
 	if main, _ := c.recv(); main != xym.SCreate {
 		t.Fatalf("want S_CREATE, got main=%d", main)
@@ -256,22 +256,27 @@ func TestLoginFlow(t *testing.T) {
 	c4.expectFail(xym.FailBadPassword)
 	c4.sendRaw(xym.CLogin, loginBody("alice", ""))
 	c4.expectFail(xym.FailInvalid)
-	c4.sendRaw(xym.CRegister, registerBody("ALICE", "pw2", "abcd"))
+	c4.sendRaw(xym.CRegister, registerBody("ALICE", "pw2", "abcd1234"))
 	c4.expectFail(xym.FailNameTaken)
 	c4.sendRaw(xym.CRegister, loginBody("bob", "pw")) // 不带安全码
 	c4.expectFail(xym.FailRefused)
 	c4.sendRaw(xym.CRegister, cat(ver, str("bob"), str("pw"))) // 老包：连设备号都没有
 	c4.expectFail(xym.FailRefused)
 
+	// 上面的故意失败已触发 IP 限速；推进窗口后继续验证找回流程。
+	srv.guards.mu.Lock()
+	future := time.Now().Add(2 * failWindow)
+	srv.guards.now = func() time.Time { return future }
+	srv.guards.mu.Unlock()
 	// 找回：安全码错 106 → 核对 104 → 重设 105 → 新密码能登，旧 sid 失效
 	c5 := dial(t, addr)
 	c5.sendRaw(xym.CRecover, cat(ver, str("alice"), str("zzzz"), str(""), str("")))
 	c5.expectFail(FailRecoverBadCode)
-	c5.sendRaw(xym.CRecover, cat(ver, str("nobody"), str("abcd"), str(""), str("")))
-	c5.expectFail(xym.FailNoAccount)
-	c5.sendRaw(xym.CRecover, cat(ver, str("alice"), str("ABCD"), str(""), str("")))
+	c5.sendRaw(xym.CRecover, cat(ver, str("nobody"), str("abcd1234"), str(""), str("")))
+	c5.expectFail(FailRecoverBadCode)
+	c5.sendRaw(xym.CRecover, cat(ver, str("alice"), str("ABCD1234"), str(""), str("")))
 	c5.expectFail(xym.RecoverCodeOK)
-	c5.sendRaw(xym.CRecover, cat(ver, str("alice"), str("abcd"), str("newpw"), str("")))
+	c5.sendRaw(xym.CRecover, cat(ver, str("alice"), str("abcd1234"), str("newpw"), str("")))
 	c5.expectFail(xym.RecoverDone)
 
 	c6 := dial(t, addr)
@@ -285,7 +290,7 @@ func TestLoginFlow(t *testing.T) {
 
 	// 另一个号起同名 → S_MSG，换名成功
 	c7 := dial(t, addr)
-	c7.sendRaw(xym.CRegister, registerBody("bob", "pw", "bob1"))
+	c7.sendRaw(xym.CRegister, registerBody("bob", "pw", "bob12345"))
 	c7.expectExt("LOGIN_PTO.S_SEND_SID")
 	c7.recv() // S_CREATE
 	c7.sendRaw(xym.CCreate, cat([]byte{1, 0}, str("悟空")))
@@ -338,7 +343,7 @@ func TestHotfix(t *testing.T) {
 	cfg.Hotfix = body
 	addr, _ := startServer(t, cfg)
 	c := dial(t, addr)
-	c.sendRaw(xym.CRegister, registerBody("hf", "pw", "abcd"))
+	c.sendRaw(xym.CRegister, registerBody("hf", "pw", "abcd1234"))
 	c.expectExt("LOGIN_PTO.S_SEND_SID")
 	c.recv() // S_CREATE
 	c.sendRaw(xym.CCreate, cat([]byte{1, 0}, str("沙僧")))

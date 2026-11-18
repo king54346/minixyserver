@@ -111,6 +111,8 @@ func onUseDrug(s *Session, p *Player, m xym.Msg) {
 		limit = s.role.Grade
 	case 10014:
 		limit = s.role.Grade * 2
+	case 10015:
+		limit = min(s.role.Grade*2+20, gamedata.MaxPetGrade) // 高级丹可突破到上限+20，但绝不超过 100 级
 	}
 	limit = min(limit, gamedata.MaxPetGrade)
 	if pet.Grade >= limit {

@@ -9,14 +9,16 @@ import (
 
 // 缘分：出战卡满足缘分条件时，攻击 / 生命按百分比提升，多条缘分连乘。
 //
-// 依据 client logic/pet_prop.lua：属性 = floor((等级公式 + 装备加成) × 缘分倍率)，
-// 倍率 = ∏(1 + 生效档的百分比)；relate_mgr.getActiveExt 给出每条缘分的条件是否满足：
-//   - 有缘护法（npet，逗号分隔多名）：全部在出战阵容里 → 取第 1 档；
+// 依据 client logic/pet_prop.lua、logic/relate_mgr.lua、view/PetDetailView.lua：
+//   - 属性 = floor((等级公式 + 装备加成) × 缘分倍率)，倍率 = ∏(1 + 生效档的百分比)；
 //   - 有缘装备（nequip，如 5 星金武器、4 星紫武器）：出战位穿着第 1 件 → 第 1 档，否则穿着第 2 件 → 第 2 档；
 //   - 有缘法术书（nmagic）：同装备，按出战位所穿法术书判断；
-//   - 护法名可按 relate_rep 互相替换（如 孙悟空 / 斗战胜佛）。
-// 例：东华帝君 缘分 2407「神农尺,晓风残月」hp 15;8——穿金武器神农尺 +15% 生命，只穿紫武器晓风残月 +8%。
-// 大缘（together_npet / together_att / together_hp）不在这个公式里，未实现。
+//   - 有缘护法（npet，逗号分隔多名；护法名可按 relate_rep 互相替换，如 孙悟空 / 斗战胜佛）：
+//     - 3/4 星：全部在出战阵容里 → 取第 1 档；
+//     - 5 星未同修（getPetRelateInfo，含援护）：npet 里每名在出战阵容 +10，不在阵上但拥有 5 星的那名按其同名卡数
+//       （TLAdd，至多 10）计，加成 = min(合计, att / hp 第 1 档, 15)%；
+//     - 5 星已同修（Pet.Together，getExtendPetRelateInfo，代替普通人物缘与援护）：npet 与 together_npet 的第一名，
+//       每名在出战阵容 +10，不在阵上但拥有 5 星的那名按其同名卡数（至多 10）计，加成 = min(合计, together_att / hp, 15)%。
 
 // relateRatio 是出战位 fp 上的卡 pi 的缘分倍率（hp 为 true 时算生命，否则攻击）；不在出战阵容时为 1。
 func (p *Player) relateRatio(pi *gamedata.PetInfo, fp int, hp bool) float64 {
@@ -24,6 +26,7 @@ func (p *Player) relateRatio(pi *gamedata.PetInfo, fp int, hp bool) float64 {
 	if pi == nil || sl == nil || fp <= 0 {
 		return 1
 	}
+	pet := p.petAtFightPos(fp)
 	names := p.fightNames()
 	suits := map[int32]bool{}
 	for _, pos := range sl.Suit {
@@ -41,6 +44,10 @@ func (p *Player) relateRatio(pi *gamedata.PetInfo, fp int, hp bool) float64 {
 	for _, id := range pi.Relate {
 		r := gamedata.Relates[id]
 		if r == nil {
+			continue
+		}
+		if len(r.NPet) > 0 {
+			ratio *= 1 + p.personRelatePct(pet, pi, id, r, names, hp)/100
 			continue
 		}
 		vals := r.Att
@@ -95,49 +102,128 @@ func ridList(ids []int32) []xym.Msg {
 	return out
 }
 
-// extendRatio 是修行结缘得到的人物缘（Pet.Combine）带来的倍率（出战时）。照 relate_mgr：
-//   - 只结缘：和普通人物缘一样，npet 都在出战阵容 → 第 1 档（如「礼仪之邦」与孔子同上阵攻击 +10%）；
-//   - 已同修（Pet.Together）：getExtendPetRelateInfo——npet 与 together_npet 的第一名，每名在出战阵容 +10，
-//     不在阵上但拥有 5 星的那名按其同名卡数（至多 10）计，加成 = min(合计, together_att / hp, 15)%。
-func (p *Player) extendRatio(pet *Pet, hp bool) float64 {
-	if len(pet.Combine) == 0 || p.fightPos(pet.BagPos) <= 0 {
-		return 1
+// personRelatePct 计算一条人物缘 r（npet 非空）的加成百分比（0–15）。
+// 5 星护法：若该缘分已开启同修（Pet.Together），按 getExtendPetRelateInfo 算并代替普通缘分 / 援护；
+// 否则按 getPetRelateInfo 算（含场下 5 星同名卡援护加成）。非 5 星护法仅在 npet 全部上阵时生效。
+func (p *Player) personRelatePct(pet *Pet, pi *gamedata.PetInfo, id int32, r *gamedata.RelateInfo, names map[string]bool, hp bool) float64 {
+	if pi == nil || len(r.NPet) == 0 {
+		return 0
 	}
-	names := p.fightNames()
-	ratio := 1.0
-	for _, id := range pet.Combine {
-		r := gamedata.Relates[id]
-		if r == nil {
-			continue
-		}
-		if slices.Contains(pet.Together, id) && len(r.TogetherNPet) > 0 {
-			limit := r.TogetherAtt
-			if hp {
-				limit = r.TogetherHP
-			}
-			if len(limit) == 0 {
-				continue
-			}
-			effect := 0.0
-			for _, n := range append(slices.Clone(r.NPet), r.TogetherNPet[0]) {
-				if names[n] || names[gamedata.RelateReps[n]] {
-					effect += 10
-				} else if b := p.bestBench5(n); b > 0 {
-					effect += float64(min(b, 10))
-				}
-			}
-			ratio *= 1 + min(effect, limit[0], 15)/100
-			continue
-		}
+	if pi.Star < 5 {
 		vals := r.Att
 		if hp {
 			vals = r.HP
 		}
-		if len(vals) > 0 && len(r.NPet) > 0 && relateActive(r, names, nil, nil)[0] {
-			ratio *= 1 + vals[0]/100
+		if len(vals) > 0 && relateActive(r, names, nil, nil)[0] {
+			return vals[0]
+		}
+		return 0
+	}
+	list := r.NPet
+	vals := r.Att
+	if hp {
+		vals = r.HP
+	}
+	if pet != nil && slices.Contains(pet.Together, id) && len(r.TogetherNPet) > 0 {
+		list = append(slices.Clone(r.NPet), r.TogetherNPet[0])
+		vals = r.TogetherAtt
+		if hp {
+			vals = r.TogetherHP
+		}
+	}
+	if len(vals) == 0 {
+		return 0
+	}
+	effect := 0.0
+	for _, n := range list {
+		if names[n] || names[gamedata.RelateReps[n]] {
+			effect += 10
+		} else if b := p.bestBench5(n); b > 0 {
+			effect += float64(min(b, 10))
+		}
+	}
+	return min(effect, vals[0], 15)
+}
+
+// extendRatio 是修行结缘得到的人物缘（Pet.Combine）带来的倍率（出战时）。
+func (p *Player) extendRatio(pet *Pet, hp bool) float64 {
+	if len(pet.Combine) == 0 || p.fightPos(pet.BagPos) <= 0 {
+		return 1
+	}
+	pi := gamedata.Pets[pet.Type]
+	names := p.fightNames()
+	ratio := 1.0
+	for _, id := range pet.Combine {
+		if pi != nil && slices.Contains(pi.Relate, id) {
+			continue
+		}
+		if r := gamedata.Relates[id]; r != nil && len(r.NPet) > 0 {
+			ratio *= 1 + p.personRelatePct(pet, pi, id, r, names, hp)/100
 		}
 	}
 	return ratio
+}
+
+// fightRelatePets 返回当前出战阵容里与 changed 中的 5 星护法有缘（含同修）的出战 5 星护法（不含已在 changed 里的），
+// 供场下 5 星同名卡数量（TLAdd）变动时一并下发 S_UPDATE_PET 刷新客户端显示的血量 / 攻击。
+func (p *Player) fightRelatePets(changed []*Pet) []*Pet {
+	touched := map[string]bool{}
+	seen := map[*Pet]bool{}
+	for _, pet := range changed {
+		if pet == nil {
+			continue
+		}
+		seen[pet] = true
+		if pi := gamedata.Pets[pet.Type]; pi != nil && pi.Star == 5 {
+			touched[pi.Name] = true
+			if rep := gamedata.RelateReps[pi.Name]; rep != "" {
+				touched[rep] = true
+			}
+		}
+	}
+	if len(touched) == 0 {
+		return nil
+	}
+	lu := p.lineup(p.FightNo)
+	if lu == nil {
+		return nil
+	}
+	var out []*Pet
+	for _, sl := range lu.Slots {
+		if sl == nil || sl.Pet == 0 {
+			continue
+		}
+		for _, pet := range p.Pets {
+			if pet.BagPos != sl.Pet || seen[pet] {
+				continue
+			}
+			pi := gamedata.Pets[pet.Type]
+			if pi == nil || pi.Star != 5 {
+				continue
+			}
+			hit := false
+			for _, id := range append(slices.Clone(pi.Relate), pet.Combine...) {
+				r := gamedata.Relates[id]
+				if r == nil {
+					continue
+				}
+				for _, n := range append(slices.Clone(r.NPet), r.TogetherNPet...) {
+					if touched[n] {
+						hit = true
+						break
+					}
+				}
+				if hit {
+					break
+				}
+			}
+			if hit {
+				seen[pet] = true
+				out = append(out, pet)
+			}
+		}
+	}
+	return out
 }
 
 // bestBench5 是名为 name（或可替换名）、没在出战阵容的 5 星卡里最多的同名卡数（同修的后援加成）。

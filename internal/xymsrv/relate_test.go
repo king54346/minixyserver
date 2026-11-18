@@ -113,3 +113,52 @@ func TestRelateHelper(t *testing.T) {
 		t.Fatalf("helper 李世民 + 女王 %.3f, want 1.21", r)
 	}
 }
+
+// TestRelateHouyuanAndTongxiu：5 星李淳风（15032）自带缘分 2186「轮回有道」（npet=袁天罡 hp 10，together_npet=伏羲 together_hp 15）：
+//   - 未同修时：场下 5 星袁天罡同名卡 +8 → 援护血量 +8%；再得 1 张同名卡（+9）→ 血量 +9%（+1%）；
+//   - 开启同修后代替援护：按 袁天罡 + 伏羲 合计（上限 together_hp=15%），袁天罡(+9)+伏羲(+8) → 血量 +15%。
+func TestRelateHouyuanAndTongxiu(t *testing.T) {
+	p := newPlayer(1)
+	lu := p.lineup(p.FightNo)
+	for _, sl := range lu.Slots {
+		sl.Pet = 0
+	}
+	lcf := p.addPet(15032) // 5 星李淳风
+	lu.Slots[0].Pet = lcf.BagPos
+	pi := gamedata.Pets[15032]
+	baseHP := pi.HP(lcf.Grade)
+
+	ytg := p.addPet(petTypeByName(t, "袁天罡"))
+	ytg.TLAdd = 8
+	if r := p.relateRatio(pi, 1, true); math.Abs(r-1.08) > 1e-9 {
+		t.Fatalf("援护 +8: ratio %.4f, want 1.08", r)
+	}
+	_, hp8 := p.petStats(lcf)
+	if want := int32(float64(baseHP) * 1.08); hp8 != want {
+		t.Fatalf("hp8 %d, want %d", hp8, want)
+	}
+
+	// 多一张同名卡（+9）：血量加成变为 +9%，且 fightRelatePets 包含出战的李淳风
+	p.gainPet(ytg.Type)
+	if ytg.TLAdd != 9 {
+		t.Fatalf("TLAdd %d, want 9", ytg.TLAdd)
+	}
+	if r := p.relateRatio(pi, 1, true); math.Abs(r-1.09) > 1e-9 {
+		t.Fatalf("援护 +9: ratio %.4f, want 1.09", r)
+	}
+	_, hp9 := p.petStats(lcf)
+	if want := int32(float64(baseHP) * 1.09); hp9 != want || hp9 <= hp8 {
+		t.Fatalf("hp9 %d (hp8 %d), want %d", hp9, hp8, want)
+	}
+	if rel := p.fightRelatePets([]*Pet{ytg}); len(rel) != 1 || rel[0] != lcf {
+		t.Fatalf("fightRelatePets %v, want [李淳风]", rel)
+	}
+
+	// 开启 2186 同修：代替原援护，按 袁天罡(+9) + 伏羲(+8) 算，上限 15%
+	fx := p.addPet(petTypeByName(t, "伏羲"))
+	fx.TLAdd = 8
+	lcf.Together = append(lcf.Together, 2186)
+	if r := p.relateRatio(pi, 1, true); math.Abs(r-1.15) > 1e-9 {
+		t.Fatalf("同修 袁天罡(+9)+伏羲(+8): ratio %.4f, want 1.15", r)
+	}
+}

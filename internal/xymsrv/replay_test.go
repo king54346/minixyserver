@@ -21,7 +21,7 @@ import (
 func enterWorld(t *testing.T, addr, urs string) *client {
 	t.Helper()
 	c := dial(t, addr)
-	c.sendRaw(xym.CRegister, registerBody(urs, "pw", "abcd"))
+	c.sendRaw(xym.CRegister, registerBody(urs, "pw", "abcd1234"))
 	c.expectExt("LOGIN_PTO.S_SEND_SID")
 	c.recv() // S_CREATE
 	c.sendRaw(xym.CCreate, cat([]byte{1, 0}, str(urs)))

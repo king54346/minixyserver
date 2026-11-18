@@ -3,6 +3,8 @@ package xymsrv
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,7 +14,12 @@ import (
 // twoPlayers 起服并让 a、b 两个账号进游戏（uid 20001、20002）。
 func twoPlayers(t *testing.T) (*Server, *client, *client) {
 	t.Helper()
-	srv, addr, _ := startServerSrv(t, DefaultConfig())
+	return twoPlayersCfg(t, DefaultConfig())
+}
+
+func twoPlayersCfg(t *testing.T, cfg Config) (*Server, *client, *client) {
+	t.Helper()
+	srv, addr, _ := startServerSrv(t, cfg)
 	a := enterWorld(t, addr, "alice")
 	b := enterWorld(t, addr, "bob")
 	a.collect() // b 登录时 a 可能收到推送
@@ -103,9 +110,13 @@ func TestChat(t *testing.T) {
 	}
 }
 
-// TestMail：管理接口发信（元宝 + 银两 + 道具），玩家收到未读数、看列表、全部领取、清空。
+// TestMail：管理接口发信（元宝 + 银两 + 道具），玩家收到未读数、看列表、全部领取、清空；
+// 发放和领取都要落 gm.log 审计流水。
 func TestMail(t *testing.T) {
-	srv, a, _ := twoPlayers(t)
+	gmlog := filepath.Join(t.TempDir(), "gm.log")
+	cfg := DefaultConfig()
+	cfg.GMLog = gmlog
+	srv, a, _ := twoPlayersCfg(t, cfg)
 	h := srv.AdminHandler()
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/mail",
@@ -143,6 +154,10 @@ func TestMail(t *testing.T) {
 	if p.itemCount(10317) != 2 {
 		t.Fatalf("items %d", p.itemCount(10317))
 	}
+	if b, err := os.ReadFile(gmlog); err != nil || !strings.Contains(string(b), `"op":"POST /mail"`) ||
+		!strings.Contains(string(b), `"op":"mail claim"`) || !strings.Contains(string(b), "补偿") {
+		t.Fatalf("gm log missing audit: %v %s", err, b)
+	}
 	a.sendExt("MAIL_PTO.C_CLICK_NEW_MAIL_REWARD", xym.Msg{"idx": 0}) // 领过了
 	a.expectExt("ETC_PTO.S_RET_MSG")
 	a.sendExt("MAIL_PTO.C_DEL_ALL_NEW_MAIL", xym.Msg{"list": []xym.Msg{}})
@@ -153,5 +168,47 @@ func TestMail(t *testing.T) {
 	// 全服发：两个角色各一封
 	if n, err := srv.SendMail(0, MailSpec{Title: "全服", Gold: 1}); err != nil || n != 2 {
 		t.Fatalf("broadcast mail %d %v", n, err)
+	}
+}
+
+// TestChatHistoryPersists：聊天记录写全服存档，服务器重启后还能拉到。
+// 早先只在内存里，重启就清空（2026-11-18 用户报）。
+func TestChatHistoryPersists(t *testing.T) {
+	dir := t.TempDir()
+	st := openTestStore(t, dir)
+
+	ch := newChat(st)
+	key := histKey(chWorld, 0)
+	ch.Lock()
+	ch.SN++
+	rec := chatMsg{SN: ch.SN, UID: 20001, Name: "alice", FP: 12345, Channel: chWorld, Type: 0, Msg: "重启前的消息", TS: 1763000000}
+	ch.Hist[key] = append(ch.Hist[key], rec)
+	saveGlobal(ch.st, globalChat, ch)
+	ch.Unlock()
+
+	// 模拟重启：同一份存档重新打开，重新加载聊天状态。
+	st2 := openTestStore(t, dir)
+	ch2 := newChat(st2)
+	list := ch2.Hist[key]
+	if len(list) != 1 {
+		t.Fatalf("重启后聊天记录丢了: %+v", ch2.Hist)
+	}
+	got := list[0]
+	if got.Msg != "重启前的消息" || got.SN != 1 || got.UID != 20001 || got.FP != 12345 || got.TS != 1763000000 {
+		t.Fatalf("重启后内容不对: %+v", got)
+	}
+	if ch2.SN != 1 {
+		t.Fatalf("sn 应该延续（客户端按 sn 翻页）, got %d", ch2.SN)
+	}
+	// 关键：读回来必须是 int32/int64，JSON 的 float64 会让 S_CHANNEL_MSG 编码报 not a number。
+	m := got.msg()
+	if _, ok := m["sn"].(int32); !ok {
+		t.Fatalf("sn 类型 %T", m["sn"])
+	}
+	if _, ok := m["timestamp"].(int64); !ok {
+		t.Fatalf("timestamp 类型 %T", m["timestamp"])
+	}
+	if _, ok := m["fight_point"].(int); !ok {
+		t.Fatalf("fight_point 类型 %T", m["fight_point"])
 	}
 }

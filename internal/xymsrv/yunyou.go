@@ -24,8 +24,8 @@ const (
 )
 
 var (
-	yyCardPrice = map[int]int32{4: 500, 5: 1500}
-	yySoulPrice = map[int]int32{4: 50, 5: 120}
+	yyCardPrice = map[int]int32{4: 1000, 5: 3000}
+	yySoulPrice = map[int]int32{4: 100, 5: 240}
 )
 
 type yyGoods struct {

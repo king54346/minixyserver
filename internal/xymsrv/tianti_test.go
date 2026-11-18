@@ -16,10 +16,18 @@ func TestTianti(t *testing.T) {
 	}
 	c.expectExt("LADDER_PTO.S_GET_PAIR_TIME")
 	c.sendExt("LADDER_PTO.C_OPEN_RANK", xym.Msg{"type": 50})
-	if l := c.expectExt("LADDER_PTO.S_OPEN_RANK")["list"].([]xym.Msg); len(l) != 81 || // 50 级组：80 个假玩家（45、50 级）+ 自己
-		num(l[0], "pos") != 1 ||
-		num(l[0], "score") < num(l[1], "score") || l[0]["name"] == "" {
-		t.Fatalf("rank %v", l[:2])
+	if l := c.expectExt("LADDER_PTO.S_OPEN_RANK")["list"].([]xym.Msg); len(l) != 0 {
+		t.Fatalf("unmatched players or fake players entered rank: %v", l)
+	}
+	a, err := srv.accounts.Register("ttfoe", "pw", "abcd1234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = srv.roles.Create(a.UID, 1, "ttfoe"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = srv.players.Get(a.UID); err != nil {
+		t.Fatal(err)
 	}
 	c.sendExt("LADDER_PTO.C_START_FIGHT", nil) // 没匹配
 	c.until(t, "LADDER_PTO.S_GET_PAIR_TIME")
@@ -55,9 +63,9 @@ func TestTianti(t *testing.T) {
 	if got["FIGHT_PTO.S_FIGHT_RECORD"] == nil || num(r, "type") != wantType || r["record"] == "" {
 		t.Fatalf("fight %v", got)
 	}
-	wantScore, wantGold := ttInitScore-ttStep, ttLoseGold
+	wantScore, wantGold := ttInitScore+ttScoreDelta(ttInitScore, ttInitScore, false), ttLoseGold
 	if win {
-		wantScore, wantGold = ttInitScore+ttStep, ttWinGold
+		wantScore, wantGold = ttInitScore+ttScoreDelta(ttInitScore, ttInitScore, true), ttWinGold
 	}
 	if num(open, "state") != 0 || num(open, "score") != wantScore || num(r, "gold") != wantGold ||
 		srv.roles.Get(p.UID).HPoint != hp-1 || p.tasks().Today[evTianti] != 1 {

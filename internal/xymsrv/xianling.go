@@ -50,8 +50,8 @@ type xlNeed struct {
 }
 
 type xlGoods struct {
-	Pet  int32    `json:"pet"`
 	Need []xlNeed `json:"need"`
+	Pet  int32    `json:"pet"`
 	Hot  bool     `json:"hot,omitempty"`
 }
 
@@ -84,28 +84,58 @@ func xlLeftTime() int64 {
 }
 
 func (p *Player) xianling(rng *rand.Rand) *XianlingState {
+	x, _ := p.xianlingState(rng)
+	return x
+}
+
+func (p *Player) xianlingState(rng *rand.Rand) (*XianlingState, bool) {
+	changed := false
 	if p.Xianling == nil {
 		p.Xianling = &XianlingState{}
+		changed = true
 	}
 	x := p.Xianling
-	if x.Hot == 0 || gamedata.Pets[x.Hot] == nil {
+	if x.Hot == 0 || gamedata.Pets[x.Hot] == nil || xlExcluded(x.Hot) {
 		x.Hot = xlRarePets(rng, 1)[0]
+		x.Period = 0 // 热门换了，这批货一起换掉
+		changed = true
+	}
+	if slices.ContainsFunc(x.Goods, func(g xlGoods) bool { return g.Pet != 0 && xlExcluded(g.Pet) }) {
+		x.Period = 0 // 旧存档里有现在不出的卡（取经组、助人海星）：重新进货
+		changed = true
 	}
 	if d := today(); x.Day != d {
 		x.Day, x.Refreshed, x.YunRefreshed = d, 0, 0
+		changed = true
 	}
 	if now := xlPeriodNow(); x.Period != now {
 		x.Period = now
 		x.Goods = xlNewGoods(rng, x.Hot)
+		changed = true
 	}
-	return x
+	return x, changed
 }
 
 // xlRarePets 随机 n 个不同的 4、5 星护法。
 func xlRarePets(rng *rand.Rand, n int) []int32 {
-	pool := slices.Concat(gamedata.PetsByStar[4], gamedata.PetsByStar[5])
+	pool := slices.DeleteFunc(slices.Concat(gamedata.PetsByStar[4], gamedata.PetsByStar[5]), xlExcluded) // Concat 是新切片，可以原地删
 	rng.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	return pool[:min(n, len(pool))]
+}
+
+// xlExcluded：仙灵招募不出的卡（用户 2026-10-30）——取经组（取经商店里兑换的金身罗汉、净坛使者、广力菩萨、
+// 斗战胜佛、旃檀功德佛各星级）和助人海星。
+func xlExcluded(t int32) bool {
+	pi := gamedata.Pets[t]
+	if pi == nil || pi.Name == "助人海星" {
+		return true
+	}
+	for _, g := range gamedata.Qujing.Shop {
+		if g.Type == 1 && (g.ID == t || gamedata.Pets[g.ID] != nil && gamedata.Pets[g.ID].Name == pi.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 // xlMaterials 是可当材料的 3–4 星武器 / 衣服与法术书。
@@ -154,7 +184,7 @@ func xlNewGoods(rng *rand.Rand, hot int32) []xlGoods {
 		case r < 6:
 			star = 4
 		}
-		pool := gamedata.PetsByStar[star]
+		pool := slices.DeleteFunc(slices.Clone(gamedata.PetsByStar[star]), xlExcluded)
 		pet := pool[rng.IntN(len(pool))]
 		l = append(l, xlEntry(rng, pet, pet == hot))
 	}
@@ -191,8 +221,10 @@ func (x *XianlingState) msg() xym.Msg {
 
 func init() {
 	Handle("ETC_PTO.C_OPEN_XIANLING_SHOP", func(s *Session, p *Player, m xym.Msg) {
-		x := p.xianling(s.actRng())
-		p.saveLog(s)
+		x, changed := p.xianlingState(s.actRng())
+		if changed {
+			p.saveLog(s)
+		}
 		s.SendExt("ETC_PTO.S_SEND_XIANLING_SHOP_INFO", x.msg())
 	})
 	Handle("ETC_PTO.C_XIANLING_SHOP_EXCHANGE_GOODS", onXLExchange)
