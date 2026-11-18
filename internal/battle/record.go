@@ -97,9 +97,17 @@ func DecodeRecord(b []byte) (out []Cmd, err error) {
 			u8()  // 种族
 			u8()  // power
 			c.Targets = [][2]int64{{int64(c.Actor), hp}}
+		case CmdPetClone: // Actor = 源站位，Magic = 新站位
+			c.Actor = int(u8())
+			c.Magic = u8()
 		case CmdBloodPoolIn, CmdBloodPoolAtt: // Actor = 站位，Magic = 量
 			c.Actor = int(u8())
 			c.Magic = u32()
+		case CmdAddTempTalent: // Actor = 给予者站位，Magic = 神通号，Targets = [[获得者, 0]]
+			c.Actor = int(u8())
+			to := u8()
+			c.Magic = u32()
+			c.Targets = [][2]int64{{to, 0}}
 		case CmdDitingCount:
 			c.Actor = int(u8())
 		case CmdXiuluoCount: // Actor = 站位，Magic = 点数
@@ -174,9 +182,15 @@ func replay(team1, team2 []*Fighter, rec []byte) (bool, map[int]bool, error) {
 		case CmdSubHP:
 			for _, x := range c.Targets {
 				if x[1] > hp[x[0]] {
-					return fail(i, "pos %d loses %d of %d hp", x[0], x[1], hp[x[0]])
+					// 致死一击的 SUB_HP 携带的是显示用真实伤害，可以超过剩余血量：按扣到 0 处理。
+					// 已经 0 血还继续扣，仍视为战报异常。
+					if hp[x[0]] <= 0 {
+						return fail(i, "pos %d loses %d of %d hp", x[0], x[1], hp[x[0]])
+					}
+					hp[x[0]] = 0
+				} else {
+					hp[x[0]] -= x[1]
 				}
-				hp[x[0]] -= x[1]
 				if hp[x[0]] == 0 && (i+1 >= len(cmds) || cmds[i+1].ID != CmdDie) {
 					return fail(i, "pos %d at 0 hp without DIE", x[0])
 				}
@@ -196,6 +210,8 @@ func replay(team1, team2 []*Fighter, rec []byte) (bool, map[int]bool, error) {
 			for _, x := range c.Targets {
 				hp[x[0]], maxHP[x[0]] = x[1], x[1]
 			}
+		case CmdPetClone: // 分裂：新站位复制源单位当前的生命 / 上限
+			hp[c.Magic], maxHP[c.Magic] = hp[int64(c.Actor)], maxHP[int64(c.Actor)]
 		case CmdChgMaxHP: // 客户端只改上限；降到当前生命以下时随后有 SUB_HP 扣掉超出部分
 			for _, x := range c.Targets {
 				maxHP[x[0]] += x[1]

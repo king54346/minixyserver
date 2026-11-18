@@ -106,18 +106,18 @@ func TestTianWeiCharges(t *testing.T) {
 	t.Fatal("天威降临 not triggered after a dodge")
 }
 
-// TestPoisonNoStack：同种燃烧再挂只保留一个（取高），换高等级时先去掉旧图标。
+// TestPoisonNoStack：同种中毒再挂只保留一个（取高），换高等级时先去掉旧图标（燃烧不在此列：所有燃烧都叠加，见 TestBurnStack）。
 func TestPoisonNoStack(t *testing.T) {
 	x := newUnit(fu(1, 100, 1000, 1), 0)
 	b := faqBattle(x)
-	b.addPoison(x, poison{pct: 2, left: maxRounds, buff: 5021, burn: true})
-	b.addPoison(x, poison{pct: 6, left: maxRounds, buff: 5023, burn: true})
-	b.addPoison(x, poison{pct: 4, left: maxRounds, buff: 5022, burn: true})
-	if len(x.poison) != 1 || x.poison[0].pct != 6 || x.poison[0].buff != 5023 {
+	b.addPoison(x, poison{pct: 2, left: 3, buff: 5131})
+	b.addPoison(x, poison{pct: 6, left: 3, buff: 5133})
+	b.addPoison(x, poison{pct: 4, left: 3, buff: 5132})
+	if len(x.poison) != 1 || x.poison[0].pct != 6 || x.poison[0].buff != 5133 {
 		t.Fatalf("poison %+v", x.poison)
 	}
-	if _, ok := x.buffSlot[5021]; ok {
-		t.Fatal("old burn icon not removed")
+	if _, ok := x.buffSlot[5131]; ok {
+		t.Fatal("old poison icon not removed")
 	}
 }
 

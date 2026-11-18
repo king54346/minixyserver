@@ -12,6 +12,10 @@ func init() {
 const (
 	qkxBindBuff = 5231 // 捆缚（官方战报乾坤袖）
 	hiddenBuff  = 5111 // 隐身
+
+	// huoPaoEntryShots：火炮之术在敌方护法入阵时固定发射的弹丸数（2026-11-15 调整：
+	// 不再随天将激发增加，原为 1 + 激发等级）。
+	huoPaoEntryShots = 5
 )
 
 // enter 是单位从后阵补位进入前阵时的「入阵」神通。开场就在前阵的不算入阵：
@@ -20,7 +24,15 @@ func (b *battle) enter(u *unit) {
 	if !u.alive() {
 		return
 	}
-	u.fpCut = 0 // 返璞归真：回到前阵复原（客户端入阵时计数也重置为 10）
+	if b.factor(LxEnter2) && !b.inEnter2 { // 裂隙「入」：入阵技生效两次（第二次在这次结算完之后）
+		b.inEnter2 = true
+		defer func() {
+			b.enter(u)
+			b.inEnter2 = false
+		}()
+	}
+	b.qjBossEnter(u) // 取经孙悟空：入阵反击
+	u.fpCut = 0      // 返璞归真：回到前阵复原（客户端入阵时计数也重置为 10）
 	b.reshowSwords(u)
 	defer func() {
 		if u.alive() && hasAny(u, enterFamilies) {
@@ -36,12 +48,11 @@ func (b *battle) enter(u *unit) {
 			b.changeAtt(c, k.id, d)
 			// 夺取的气血累计（用户确认）：生命上限同样增加，再回复同量
 			if got := b.hurt(c, u, k.id, u.hp*int64(k.param(0))/100, false); got > 0 {
-				b.changeMaxHP(c, k.id, got)
-				b.heal(c, k.id, got)
+				b.growAndHeal(c, k.id, got)
 			}
 		}
 		if k := c.tal(famHuoPaoZhiShu); k != nil && u.alive() && c.side != u.side {
-			for range 1 + k.tj { // 敌方护法入阵后对其发射一颗弹丸；激发额外 1–5 颗
+			for range huoPaoEntryShots { // 敌方护法入阵：固定 5 颗（弹丸不足时由 cannon 自行截断）
 				b.cannon(c, k, u)
 			}
 		}
@@ -77,20 +88,19 @@ func (b *battle) enter(u *unit) {
 		b.onTianGangJianQi(u, k)
 	}
 	if k := u.tal(famXiuLin); k != nil {
-		ts := b.pickN(b.allies(u), 3)
+		ts := append([]*unit{u}, b.adjacent(u)...) // 「友方三体」= 自己及左右（用户确认）
 		b.show(u, k.id, ts...)
 		for _, x := range ts {
 			b.clearOneDebuff(x)
 		}
 	}
 	if k := u.tal(famKaoLao); k != nil {
-		ts := b.pickN(b.allies(u), 3)
+		ts := append([]*unit{u}, b.adjacent(u)...) // 「友方三体」= 自己及左右（用户确认）
 		b.show(u, k.id, ts...)
 		for _, x := range ts {
 			if x.has(stTempMax) == nil {
 				grow := x.maxHP * 15 / 100
-				b.changeMaxHP(x, k.id, grow)
-				b.heal(x, k.id, grow)
+				b.growAndHeal(x, k.id, grow)
 				b.setStatus(x, stTempMax, grow, 1, false, k.Buff, slotBuff)
 			}
 		}
@@ -100,7 +110,7 @@ func (b *battle) enter(u *unit) {
 		if k == nil {
 			continue
 		}
-		ts := b.pickN(b.foes(u), 3)
+		ts := b.facing3(u) // 「敌方三体 / 三个护法」= 对位及其左右（锁定站位），不是随机三个（用户规则，同神威）
 		if len(ts) == 0 {
 			continue
 		}
@@ -132,13 +142,7 @@ func (b *battle) enter(u *unit) {
 	if k := u.tal(famPanTaoYan); k != nil {
 		b.onPanTaoYan(u, k)
 	}
-	if k := u.tal(famZhenYan); k != nil && u.slot() == 3 {
-		b.show(u, k.id, u)
-		b.changeAtt(u, k.id, u.att*int64(k.param(0))/100)
-		grow := u.maxHP * int64(k.param(0)) / 100
-		b.changeMaxHP(u, k.id, grow)
-		b.heal(u, k.id, grow)
-	}
+	b.zhenYan(u)
 	if k := u.tal(famGanLu); k != nil {
 		b.ganlu(u, k)
 		if k.tjOn() && b.chance(k.tjPct()) { // 激发：额外复活一个
@@ -185,7 +189,7 @@ func (b *battle) ganlu(u *unit, k *talent) {
 	if dead := b.deadAllies(u.side); len(dead) > 0 {
 		x := dead[b.rng.IntN(len(dead))]
 		b.show(u, k.id, x)
-		b.relive(x, k.id, x.maxHP*int64(k.param(0))/100)
+		b.reliveInitial(x, k.id, k.param(0))
 		b.setStatus(x, stNoSoul, 0, maxRounds, false, 5141, slotDebuff) // 官方战报：甘露复活后 BUFF 5141 锢魂
 	}
 }
@@ -195,10 +199,19 @@ func (b *battle) restoreInitial(x *unit, id int32) {
 	if !x.alive() {
 		return
 	}
+	// 重置已消除临时加攻，攻击结束时不能再次扣除。
+	x.tempAtt, x.tempBase = 0, 0
+	x.tempEpoch++
+	for _, key := range []stKey{stWeak, stZhanhu, stJieli} {
+		if s := x.status[key]; s != nil {
+			s.val = 0 // 保留状态的其他效果，清除时不再调整已重置的攻击。
+		}
+	}
+	x.shenliAtt = 0
 	if d := x.baseAtt - x.att; d != 0 {
 		b.changeAtt(x, id, d)
 	}
-	if d := int64(x.MaxHP) - x.maxHP; d != 0 {
+	if d := x.baseHP - x.maxHP; d != 0 {
 		b.changeMaxHP(x, id, d)
 	}
 }
@@ -206,7 +219,7 @@ func (b *battle) restoreInitial(x *unit, id int32) {
 // onYuanHu：入阵——援护。
 func (b *battle) onYuanHu(u *unit, k *talent) {
 	// 对敌方三体造成 b% 攻击力的水属性伤害，回复我方全体各自上限 c% 的生命
-	if ts := b.pickN(b.foes(u), 3); len(ts) > 0 {
+	if ts := b.facing3(u); len(ts) > 0 { // 「敌方三体 / 三个护法」= 对位及其左右（锁定站位），不是随机三个（用户规则，同神威）
 		b.show(u, k.id, ts...)
 		for _, x := range ts {
 			b.propertyHurt(u, x, k.id, u.att*int64(k.param(1))/100, 2)
@@ -279,7 +292,7 @@ func (b *battle) onTianGangJianQi(u *unit, k *talent) {
 		o := pool[b.rng.IntN(len(pool))]
 		cost := god.maxHP * int64(k.param(0)) / 100
 		b.show(u, k.id, o)
-		b.hurt(u, o, k.id, cost*2, false)
+		b.tianGangHurt(u, o, k.id, cost*2)
 		if k.tjOn() {
 			var rest []*unit
 			for _, x := range b.foes(u) {
@@ -291,11 +304,27 @@ func (b *battle) onTianGangJianQi(u *unit, k *talent) {
 				rest = b.vulnerable(rest)
 				x := rest[b.rng.IntN(len(rest))]
 				b.show(u, k.id, x)
-				b.hurt(u, x, k.id, int64(float64(cost*2)*k.tjX()/100), false)
+				b.tianGangHurt(u, x, k.id, int64(float64(cost*2)*k.tjX()/100))
 			}
 		}
-		b.hurt(god, god, k.id, cost, false)
+		b.loseHP(god, god, k.id, cost) // 生命消耗，不由自己的结界抵消。
 	}
+}
+
+// 天罡剑气主伤害和天将追加伤害均为物理伤害，可触发护盾、气甲、坚韧并由物理结界抵消。
+// 它是入阵神通，不产生普攻行为、先攻或反击。
+func (b *battle) tianGangHurt(u, target *unit, id int32, n int64) {
+	if !target.alive() {
+		return
+	}
+	if shield := target.tal(famHuDun); shield != nil && b.chance(shield.param(0)) {
+		b.show(target, shield.id, target)
+		n = n * int64(100-shield.param(1)) / 100
+		if shield.tjOn() {
+			b.changeAtt(u, shield.id, -min(int64(float64(u.att-u.tempAtt)*shield.tjX()/100), target.att/2))
+		}
+	}
+	b.hurt(u, target, id, n, true)
 }
 
 // onQianKunXiu：入阵——乾坤袖。
@@ -328,17 +357,18 @@ func (b *battle) onQianKunXiu(u *unit, k *talent) {
 }
 
 // onShenWei：入阵——神威。
+// 对位及左右各受水属性伤害，只有对位存活时判定驱逐。
 func (b *battle) onShenWei(u *unit, k *talent) {
-	if o := b.opposite(u); b.chance(k.param(0)) && o != nil {
-		if x := b.quzhuPick(o); x != nil { // 驱逐对位（规则同驱逐：后阵已阵亡的也可能被换上来）
-			b.show(u, k.id, o)
-			b.quzhu(o, x)
-		}
-	}
-	if ts := b.pickN(b.foes(u), 3); len(ts) > 0 {
+	if ts := b.facing3(u); len(ts) > 0 {
 		b.show(u, k.id, ts...)
 		for _, x := range ts {
 			b.propertyHurt(u, x, k.id, u.att*int64(k.param(1))/100, 2)
+		}
+	}
+	if o := b.opposite(u); o != nil && b.chance(k.param(0)) && !b.buqinGuard(o) {
+		if x := b.quzhuPick(o); x != nil { // 驱逐对位（规则同驱逐：后阵已阵亡的也可能被换上来）
+			b.show(u, k.id, o)
+			b.quzhu(o, x)
 		}
 	}
 	if k.tjOn() && b.chance(k.tjPct()) {
@@ -352,8 +382,7 @@ func (b *battle) onPanTaoYan(u *unit, k *talent) {
 	b.show(u, k.id, allies...)
 	for _, x := range allies {
 		grow := x.maxHP * int64(k.param(0)) / 100
-		b.changeMaxHP(x, k.id, grow)
-		b.heal(x, k.id, grow)
+		b.growAndHeal(x, k.id, grow)
 	}
 	if k.tjOn() && b.chance(k.tjPct()) {
 		for _, x := range allies {
@@ -378,7 +407,7 @@ func (b *battle) onGuangYinSui(u *unit, k *talent) {
 			if !x.alive() && !x.gone && x.front() && abs(x.slot()-u.slot()) == 1 && x.has(stNoSoul) == nil &&
 				b.chance(k.tjPct()) {
 				b.show(u, k.id, x)
-				b.relive(x, k.id, x.maxHP)
+				b.reliveInitial(x, k.id, 100)
 				x.doomIn = 2
 				b.setStatus(x, stNoSoul, 0, maxRounds, false, 0, 0)
 				b.huoshi(x, 5402) // 活尸2
@@ -425,5 +454,15 @@ func (b *battle) onZhuXianZhen(u *unit, k *talent) {
 				b.loseHP(u, o, k.id, dmg[i]) // 诛仙阵激发：对位护法流失上限 $x%×飞剑数 的生命（生命流失）
 			}
 		}
+	}
+}
+
+// zhenYan：阵眼——位于三号战位时攻击、生命上限各提升 a%（开场就在 3 号位的也算，入阵到 3 号位时再加）。
+func (b *battle) zhenYan(u *unit) {
+	if k := u.tal(famZhenYan); k != nil && u.alive() && u.slot() == 3 {
+		b.show(u, k.id, u)
+		b.changeAtt(u, k.id, u.att*int64(k.param(0))/100)
+		grow := u.maxHP * int64(k.param(0)) / 100
+		b.growAndHeal(u, k.id, grow)
 	}
 }

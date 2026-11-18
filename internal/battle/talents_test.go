@@ -463,9 +463,10 @@ func rampageCarrier(famID int32) ([]*Fighter, []*Fighter) {
 }
 
 // TestB3Moling 魔灵4（21054）：开场濒危暴走，本回合免伤（敌方首击 SUB_HP 0），
-// 获赠神通直到战斗结束——赠品[3]避阵10（20450）每回合开始必定治疗（ADD_HP）。
+// 获赠神通直到战斗结束——赠品[3]避阵10（20450）治疗其他队友，不能治疗载体自己。
 func TestB3Moling(t *testing.T) {
 	t1, t2 := rampageCarrier(21054)
+	t1 = append(t1, fuh(2, 0, 300, 1000, 1))
 	res, cmds := simCheck(t, t1, t2, 7)
 	if res.Skills[famMoLing.String()] == 0 {
 		t.Fatal("moling not counted")
@@ -477,8 +478,8 @@ func TestB3Moling(t *testing.T) {
 	if len(got) == 0 || got[0] != 0 {
 		t.Fatalf("first SUB_HP to 1 = %v, want 0 (rampage immune)", got)
 	}
-	if !hasCmd(cmds, CmdAddHP, 20450, 1, 200) {
-		t.Fatalf("no ADD_HP 200 to 1 by 20450 (gift bizhen): %+v", cmds)
+	if !hasCmd(cmds, CmdAddHP, 20450, 2, 200) || hasCmd(cmds, CmdAddHP, 20450, 1, -1) {
+		t.Fatalf("gift bizhen must heal teammate 2 and exclude self: %+v", cmds)
 	}
 }
 

@@ -5,13 +5,13 @@ package battle
 //
 // 一次攻击行为（attackAction）按顺序经过这些时机：
 //
-//  1. 攻击时（beforeAttack）：出手前判定，多是给自己加临时攻击 / 改这一下的性质。
+//  1. 攻击前先判定破妄，再进入蓄力释放及攻击时（beforeAttack）的效果。
 //     暴击激发、背水、突袭类（异态、驱雷、踏浪、道火、破焰、灭法、破妄、魔煞、魔主、兽妖、兽王、人皇、人圣、
 //     仙尊、仙帝、仙衣……）、横冲直撞、九尾仙车、以命演天、摄魂术等。
 //  2. 发动攻击：分击——确定第二个目标并按 a% 攻击力出手（与主攻击同一下结算，主攻击被闪避也照打）。
 //  3. 命中（attack）：先攻 → 闪避 / 盲目 → 暴击 → 守卫 / 护盾 / 受击减伤 → 扣血。
-//  4. 攻击特效（attackEffects，作用于实际受击者）：化血、毒爪、会猎、象形、驱逐、弱化、血弱、驱雷 / 踏浪 / 道火 / 破焰的附加状态。
-//  5. 命中后溅射（launchEffects，命中就触发，目标无敌也触发）：挥扫、撞击。
+//  4. 攻击特效（attackEffects，作用于实际受击者）：化血、毒爪、会猎、象形、驱逐、弱化、血弱。
+//  5. 命中后效果（launchEffects）：挥扫以实际承伤者为中心，按减伤前伤害的一半溅射；撞击另判。
 //  6. 攻击后（selfAfterAttack，作用于自身 / 全场）：狂热、咆哮、血气、武道、背水、龙息、阵眼、负重、贪吃、
 //     天威降临、火炮之术、仙剑攻击等。
 //  7. 追加攻击（followUps，只由主攻击产生，避免连锁）：连击、乱舞、横冲直撞、修罗隐身、天地灵气。
@@ -32,20 +32,30 @@ const maxAtkDepth = 6
 const (
 	atkMain atkKind = iota
 	atkFollow
+	atkXiuluo // 消耗修罗点追击：独立判定冲锋，其他规则与追击一致。
 	atkCounter
 	atkPre
 )
 
 // attackAction 让 u 对 t 进行一次攻击行为（pct = 攻击力百分比），返回造成的伤害。
 func (b *battle) attackAction(u, t *unit, pct int, kind atkKind) int64 {
+	return b.resolveAttack(u, t, pct, kind, false)
+}
+
+// resolveAttack receives preAttackDone when the turn already processed the
+// attack-before phase ahead of its charge skill.
+func (b *battle) resolveAttack(u, t *unit, pct int, kind atkKind, preAttackDone bool) int64 {
 	if t == nil || u == nil || !t.alive() || !u.alive() || b.over || b.atkDepth >= maxAtkDepth {
 		return 0
 	}
-	if t.side != u.side && t.has(stHidden) != nil {
-		return 0 // 隐身：无法成为物理攻击目标（反击、先攻、追击都打不到）
+	if t.side != u.side && t.has(stHidden) != nil && kind != atkPre {
+		return 0 // 先攻对攻击来源出手，其他攻击仍遵守隐身选取限制。
 	}
 	b.atkDepth++
 	defer func() { b.atkDepth-- }()
+	if !preAttackDone {
+		b.attackPrelude(u)
+	}
 	// 出手前的神通（脱帽退敌、驱逐类）把前阵的目标换到了后阵：改打现在的对位，不追到后阵去打（用户报：薛仁贵
 	// 脱帽把对位换下去后还追到后阵把它打死）。原本就打后阵的（少数神通）不改。
 	enemyFront := t.side != u.side && t.front()
@@ -68,9 +78,12 @@ func (b *battle) attackAction(u, t *unit, pct int, kind atkKind) int64 {
 	temp0, fired0, epoch0 := u.tempAtt, u.fired, u.tempEpoch
 	u.fired = nil
 	prevBase, prevUp := u.tempBase, u.dmgUp
-	u.tempBase = temp0 // 外层攻击行为（主攻击）的临时加攻不算进这次的加攻基数，见 atkBase
+	u.tempBase = temp0 // 保留外层临时状态，内层结束时只扣掉自己的临时加攻。
 	u.dmgUp = 0        // 伤害提高只管这一次攻击行为（追加攻击各自判定，不叠外层的）
 	defer func() { u.tempBase, u.dmgUp = prevBase, prevUp }()
+	if kind == atkXiuluo && u.has(stConfuse) == nil {
+		t = b.chongFengTarget(u, t)
+	}
 	split := (*talent)(nil)
 	b.beforeAttack(u, t)
 	if !u.alive() || b.over || !retarget() {
@@ -100,21 +113,18 @@ func (b *battle) attackAction(u, t *unit, pct int, kind atkKind) int64 {
 	}
 	u.atkTarget = t // 原定目标（飞剑用；被守卫代承时 lastVictim 是守卫）
 	dmg := b.attack(u, t, pct, kind)
-	// 用攻击者自己记的受击者：b.lastVictim 会被这一下引发的反击（对方打回来）覆盖成攻击者本人，攻击后的状态就挂不上
-	// （踏浪被反击后不僵化）。
+	// 用攻击者自己记的受击者：b.lastVictim 会被反击覆盖。
 	victim := u.atkVictim
 	killed := t.deaths > deaths0[t] || victim != nil && victim != t && victim.deaths > deaths0[victim]
+	if killed && t.side != u.side && u.alive() && u.has(stGhostAxe) != nil {
+		b.ghostAxeRevive(u)
+	}
 	defer func() { u.lastKill = killed }() // 放在最后：这次攻击行为里嵌套的其他攻击（先攻…）不覆盖
 	if kind == atkMain {
 		u.mainKill = killed // 击败了目标（之后被神佑等复活也算）
 	}
-	if to := u.splitTo; to != nil { // 主攻击没打出去（闪避 / 未命中）：第二个目标照样按 a% 攻击力挨打
-		u.splitTo = nil
-		if u.alive() && to.alive() && !b.over {
-			b.show(u, u.splitID, to)
-			b.hurt(u, to, u.splitID, u.att*int64(pct)/100, true)
-		}
-	}
+	u.splitTo = nil // 主击未命中时不补打分击。
+	landed := u.atkLanded
 	if victim == nil {
 		victim = t
 	}
@@ -127,10 +137,11 @@ func (b *battle) attackAction(u, t *unit, pct int, kind atkKind) int64 {
 			b.selfAfterAttack(u, victim, dmg)
 		}
 		if kind == atkMain {
+			u.lastKill = killed
 			b.followUps(u, t, dmg)
 		}
 	}
-	if split != nil {
+	if split != nil && landed {
 		b.afterSplit(u)
 	}
 	b.endAction(u, temp0, fired0, epoch0, kind)
@@ -169,29 +180,36 @@ func (b *battle) guardFor(t *unit) (*unit, int, bool) {
 		}
 		// 守卫：目标无敌时不必代为承受；元形的替代是强制的（FAQ），照常
 		if k := x.tal(famShouWei); k != nil && !b.invincible(t) && t.hp*100 < t.maxHP*int64(k.param(0)) && t.hp < x.hp {
-			b.show(x, k.id, x) // 守卫词条（官方没有这一条，按需求补上；在护卫者冲出去之前播）
-			if k.tjOn() {      // 激发：触发后增加 $x% 上限并回复同量
-				g := int64(float64(x.maxHP) * k.tjX() / 100)
-				b.changeMaxHP(x, k.id, g)
-				b.heal(x, k.id, g)
-			}
 			return x, k.param(1), true
 		}
-		if x.tal(famYuanXing) != nil && abs(x.slot()-t.slot()) == 1 {
+		if x.yuanxingActive && x.tal(famYuanXing) != nil && abs(x.slot()-t.slot()) == 1 {
 			return x, 0, false // 元形：视同更换受击目标，原目标不受任何影响（FAQ）
 		}
 	}
 	return nil, 0, false
 }
 
+func (b *battle) showGuard(g, target *unit, shared bool) {
+	if shared {
+		k := g.tal(famShouWei)
+		b.show(g, k.id, g)
+		if k.tjOn() {
+			grow := int64(float64(g.maxHP) * k.tjX() / 100)
+			b.growAndHeal(g, k.id, grow)
+		}
+	}
+	b.show(g, attackGuard, target)
+}
+
 // elemAttack：驱雷 / 踏浪 / 破岩 / 蹈火这次触发了时，普攻是对应属性的伤害（雷 4、水 2、土 1、火 3），否则 -1。
+// 火附魔（stFireEnchant，火狗烈焰怒吼等）攻击也为火属性（3）。
 // 属性伤害走 propertyHurt（仙衣、易伤、寒冰甲、分水、润泽），不触发护盾、气甲（FAQ：护盾「如驱雷…等造成属性伤害的
 // 攻击…均不会触发」；官方战报：破岩、蹈火的普攻后目标的仙衣触发）。
 func elemAttack(u *unit) int {
-	for _, e := range []struct {
-		fam  family
-		kind int
-	}{{famQuLei, 4}, {famTaLang, 2}, {famPoYan, 1}, {famDaoHuo, 3}} {
+	if u.has(stFireEnchant) != nil {
+		return 3
+	}
+	for _, e := range elemAttacks { // 驱雷 / 踏浪 / 破岩 / 蹈火 / 踏潮：属性伤害，不触发护盾（只认物理攻击）
 		if u.fired[e.fam] > 0 {
 			return e.kind
 		}
@@ -204,19 +222,26 @@ func elemAttack(u *unit) int {
 func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 	b.lastVictim, u.atkVictim = nil, nil
 	u.atkDealt, u.atkLanded = 0, false
+	var basis int64
+	// 死亡技、反击等可嵌套攻击；本次返回时恢复本次的基数。
+	defer func() { u.atkBasis = basis }()
 	if !t.alive() || !u.alive() { // 追加攻击前攻击者可能已被死亡神通反杀
 		return 0
 	}
-	// 驱雷 / 踏浪 / 破岩 / 蹈火的属性攻击（用户规则）：无法闪避，只能被分水等 / 法术结界 / 不侵抵消；攻击方出手的特效先
-	// 结算完（附带状态先挂上），才轮到被攻击方反应——踏浪的僵化没被抵消，对方的先攻、护盾、仙衣、反击等神通都发动不了。
+	// 属性攻击无法闪避。踏浪在攻击判定前对承伤者判定抵挡和僵化。
 	elemental := t.side != u.side && elemFired(u)
+	talang := elemental && u.fired[famTaLang] > 0
 	var guard *unit
-	guardCut, shared, guardDone := 0, false, false // 守卫：shared = 原目标与守卫一同受到此次攻击，仍受 1 点
+	guardCut, shared, guardDone := 0, false, false
+	bypassGuard := func() bool {
+		axe := u.has(stGhostAxe)
+		return axe != nil && b.chance(int(axe.val))
+	}
 	if elemental {
 		// 有守卫 / 元形代为承受时，状态挂在代挨的人身上（用户确认），所以先定下谁来挨这一下
-		if g, cut, sh := b.guardFor(t); g != nil {
+		if g, cut, sh := b.guardForAttack(t, bypassGuard()); g != nil {
 			guard, guardCut, shared = g, cut, sh
-			b.show(g, attackGuard, t)
+			b.showGuard(g, t, shared)
 		}
 		guardDone = true
 		recv := t
@@ -224,6 +249,9 @@ func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 			recv = guard
 		}
 		b.elemDebuffs(u, recv)
+		if talang {
+			b.talangStiff(recv)
+		}
 		if !t.alive() || !u.alive() || !recv.alive() {
 			return 0
 		}
@@ -236,14 +264,44 @@ func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 			return 0
 		}
 	}
-	b.lastVictim = t
-	u.atkVictim = t // 被闪避时的受击者就是原目标（命中后改成实际承受的人：守卫等）
-	sure := u.tempAtt > 0 && u.tal(famTuXi) != nil || elemental
+	if t.side != u.side && !guardDone {
+		guard, guardCut, shared = b.guardForAttack(t, bypassGuard())
+		if guard != nil {
+			b.showGuard(guard, t, shared)
+			guardDone = true
+		}
+	}
+	if guard != nil && (!guard.alive() || !guard.front()) {
+		guard, shared = nil, false
+		if talang {
+			b.talangStiff(t)
+		}
+	}
+	dodgeTarget := t
+	if guard != nil && !shared { // 元形替换目标，原目标不参与闪避。
+		dodgeTarget = guard
+	}
+	b.lastVictim = dodgeTarget
+	u.atkVictim = dodgeTarget
+	sure := u.fired[famTuXi] > 0 || elemental
 	miss := func() int64 {
-		b.show(u, attackDodge, t)
-		b.chargeUp(t) // 躲过伤害也蓄力；与受击一样 ADD_POWER 在 SUB_HP 之前
-		b.hpCmd(CmdSubHP, attackDodge, t, 0)
-		b.fireEnchant(u, t, 0)
+		b.show(u, attackDodge, dodgeTarget)
+		if guard != nil {
+			b.show(guard, attackGuard, guard)
+		}
+		b.chargeUp(dodgeTarget) // 躲过伤害也蓄力；与受击一样 ADD_POWER 在 SUB_HP 之前
+		b.hpCmd(CmdSubHP, attackDodge, dodgeTarget, 0)
+		b.fireEnchant(u, dodgeTarget, 0)
+		if t.side != u.side {
+			b.biXue(dodgeTarget) // 碧血：「只要受到攻击行为即可触发」，被闪避也算
+		}
+		if shared && dodgeTarget == guard && t.alive() && u.alive() {
+			b.fixedHit = true
+			b.hurt(u, t, attackNormal, 1, true)
+			if t.alive() && u.alive() {
+				b.onHit(u, t, 1, kind)
+			}
+		}
 		return 0
 	}
 	// 命中判定（FAQ 人圣）：命中率 = max(100 − 盲目, 25)，再减去受击方的闪避率——一次掷骰。
@@ -252,7 +310,7 @@ func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 		blind = float64(min(s.val, 75))
 	}
 	dodge := 0.0
-	d := t.tal(famShanBi)
+	d := dodgeTarget.tal(famShanBi)
 	if d != nil {
 		dodge = max(d.Param[0]-float64(u.lead.hit), 0) // 激发后可能是小数（闪避9 + 激发5 = 58.5%）
 	}
@@ -263,12 +321,25 @@ func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 			return miss()
 		case r < blind+dodge:
 			miss()
-			b.show(t, d.id, t)
+			b.show(dodgeTarget, d.id, dodgeTarget)
 			return 0
 		}
 	}
-	if !sure && t.side != u.side && b.chance(t.lead.dodge-u.lead.hit) { // 队长技：躲闪 / 命中
+	if !sure && t.side != u.side && b.chance(dodgeTarget.lead.dodge-u.lead.hit) { // 队长技：躲闪 / 命中
 		return miss()
+	}
+	if shared {
+		// 原目标命中后，守卫者独立判定能否闪避代承的主伤害。
+		dodgeTarget = guard
+		b.lastVictim, u.atkVictim = guard, guard
+		if k := guard.tal(famShanBi); k != nil && !sure && b.chanceF(max(k.Param[0]-float64(u.lead.hit), 0)) {
+			miss()
+			b.show(guard, k.id, guard)
+			return 0
+		}
+		if !sure && b.chance(guard.lead.dodge-u.lead.hit) {
+			return miss()
+		}
 	}
 	u.atkLanded = true
 	atype := int32(attackNormal)
@@ -289,20 +360,22 @@ func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 	}
 	out := dmg // 出手值（分击的第二个目标用同一个数）
 	victim := t
-	if t.side != u.side && !guardDone {
-		if g, cut, sh := b.guardFor(t); g != nil {
-			guard, guardCut, shared = g, cut, sh
-			b.show(g, attackGuard, t)
-		}
-	}
-	if guard != nil && (!guard.alive() || !guard.front()) { // 提前定下的守卫在先攻等反应里倒下 / 被换下：原目标自己挨
-		guard, shared = nil, false
+	if guard != nil && shared && !guardDone {
+		b.showGuard(guard, t, true)
 	}
 	if guard != nil {
 		victim = guard
 		dmg -= dmg * int64(guardCut) / 100
 	}
 	elem := elemAttack(u)
+	// 先保存攻击方出手值，守卫、护盾、抗性、结界、无敌和剩余生命均不能压低此基数。
+	basis = out * int64(100+u.dmgUp) / 100
+	basis = raceBoost(u, victim, basis)
+	if elem < 0 {
+		basis = scale(basis, u.lead.ndmg, 0)
+	} else {
+		basis = scale(basis, u.lead.mdmg, 0)
+	}
 	var shieldT *talent
 	if g := victim.tal(famHuDun); g != nil && elem < 0 && b.chance(g.param(0)) {
 		shieldT = g // 护盾：只有攻击行为的物理伤害才触发
@@ -363,11 +436,13 @@ func (b *battle) attack(u, t *unit, pct int, kind atkKind) int64 {
 		}
 	}
 	b.fireEnchant(u, victim, done)
-	if v := u.tal(famXiXue); v != nil && dealt > 0 && b.chance(v.param(0)) {
+	if v := u.tal(famXiXue); v != nil && done > 0 && basis > 0 && b.chance(v.param(0)) {
+		lifeBase := scale(basis, u.lead.dmg, 0)
 		b.show(u, v.id, u)
-		b.heal(u, v.id, dealt*int64(v.param(1))/100)
-		if v.tjOn() && victim.alive() {
-			b.changeMaxHP(victim, v.id, -int64(float64(done)*v.tjX()/100))
+		b.heal(u, v.id, lifeBase*int64(v.param(1))/100)
+		// 吸血回复按减伤前的基数。激发削上限要求这一击确实伤到了目标。
+		if v.tjOn() && done > 0 && victim.alive() {
+			b.changeMaxHP(victim, v.id, -int64(float64(lifeBase)*v.tjX()/100))
 		}
 	}
 	if victim.alive() && u.alive() {
@@ -386,4 +461,38 @@ func (b *battle) fireEnchant(u, t *unit, done int64) {
 	if gap := u.baseAtt - done; gap > 0 {
 		b.loseHP(u, t, magicFireHurt, gap*s.val/100)
 	}
+}
+
+// Ghost axe bypasses both types of physical attack protection.
+func (b *battle) guardForAttack(t *unit, bypass bool) (*unit, int, bool) {
+	if bypass {
+		return nil, 0, false
+	}
+	return b.guardFor(t)
+}
+
+func (b *battle) ghostAxeRevive(u *unit) {
+	var dead []*unit
+	for _, x := range b.units[u.side] {
+		if !x.alive() {
+			dead = append(dead, x)
+		}
+	}
+	if len(dead) == 0 {
+		return
+	}
+	x := dead[b.rng.IntN(len(dead))]
+	if s := x.has(stNoSoul); s != nil {
+		if s.buff != 0 {
+			b.rmBuff(x, s.buff)
+		}
+		delete(x.status, stNoSoul)
+	}
+	x.eaten = false
+	if x.reviveMark != 0 {
+		b.rmBuff(x, x.reviveMark)
+	}
+	k := newTalent(levelID(famHuanHun, 1))
+	x.reviveIn, x.revivePct, x.reviveMark = reviveDelay, k.param(1), k.Buff
+	b.markRevive(x)
 }

@@ -18,15 +18,22 @@ var raceBane = []struct {
 	race int
 }{{famQuMo, raceGhost}, {famZhuXian, raceGod}, {famDouShou, raceBeast}, {famShouXing, raceHuman}}
 
-// tuxi：突袭——攻击时 a% 概率提升当前攻击 50%（攻击后清除），并必中。
-// 官方战报（session-02）：突袭加当前攻击的 50%（1192/1202）。
+// tuxi：突袭——攻击时 a% 概率提升初始攻击 50%（攻击后清除），并必中。
+// 初始攻击力=进入战斗时的面板攻击力（图鉴 FAQ，用户确认改回）：多个突袭各自按进场值算，不叠乘。
 func (b *battle) tuxi(u *unit) {
 	// 自带突袭 + 套装突袭：各自判定，都中就加两次（用户报：只触发一次）
 	for _, k := range u.talAll(famTuXi) {
 		if b.chance(k.param(0)) {
-			b.tempUp(u, k, u.atkBase()/2+int64(float64(u.atkBase())*k.tjX()/100)) // 激发：额外 $x%，且不触发先攻、逆势
-			b.buff(u, tuxiHitBuff, 1)                                             // 官方战报：突袭后挂「命中buff」5461（必中）
+			base := u.baseAtt                                       // 进场值：不吃本场的永久/临时加攻
+			b.tempUp(u, k, base/2+int64(float64(base)*k.tjX()/100)) // 激发：额外 $x%，且不触发先攻、逆势
+			b.buff(u, tuxiHitBuff, 1)                               // 官方战报：突袭后挂「命中buff」5461（必中）
 		}
+	}
+}
+
+func (b *battle) attackPrelude(u *unit) {
+	if k := u.tal(famPoWang); k != nil {
+		b.onPoWang(u, k)
 	}
 }
 
@@ -34,15 +41,15 @@ func (b *battle) beforeAttack(u, t *unit) {
 	if k := u.tal(famXianDi); k != nil && b.chance(k.param(0)) {
 		allies := b.allies(u)
 		b.show(u, k.id, allies...)
-		n := b.raceCount(u.side, raceGod) // 「本方每有一名仙族护法…（最高4名）」
+		sum := b.raceSum(u.side, raceGod, maxHPOf) // 每名仙族护法各自生命值的 b%（最高 4 名）
 		for _, x := range allies {
-			b.heal(x, k.id, k.tjBoost(x.maxHP*int64(k.param(1))*n/100))
+			b.heal(x, k.id, k.tjBoost(sum*int64(k.param(1))/100))
 			b.wanxianSword(x) // 万仙来朝：「仙帝造成回复时」受回复者判定仙剑（满血没有实际回血也算，之前满血时永远拿不到剑）
 		}
 	}
 	if k := u.tal(famRenHuang); k != nil && b.chance(k.param(0)) {
 		b.show(u, k.id, u)
-		b.addShield(u, u.maxHP*int64(k.param(1))*b.raceCount(u.side, raceHuman)/100, false)
+		b.addShield(u, b.raceSum(u.side, raceHuman, maxHPOf)*int64(k.param(1))/100, false)
 	}
 	if k := u.tal(famLingYou); k != nil {
 		if x := b.mostHurt(u.side); x != nil && x.hp < x.maxHP {
@@ -60,26 +67,26 @@ func (b *battle) beforeAttack(u, t *unit) {
 		b.onRenSheng(u, k)
 	}
 	if k := u.tal(famMoSha); k != nil && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.baseAtt*int64(k.param(1))*b.raceCount(u.side, raceGhost)/100)
-		u.attachSoul = true // 攻击附带锢魂：打中后才挂（attackEffects），闪避不挂
+		b.tempUp(u, k, b.raceSum(u.side, raceGhost, baseAttOf)*int64(k.param(1))/100) // 初始攻击力（用户规则）
+		u.attachSoul = true                                                           // 攻击附带锢魂：打中后才挂（attackEffects），闪避不挂
 	}
 	if k := u.tal(famXianZun); k != nil && b.chance(k.param(0)) {
 		foes := b.foes(u)
 		b.show(u, k.id, foes...)
 		for _, x := range foes { // 群体道属性伤害：每名仙族护法 b% 攻击
-			b.propertyHurt(u, x, k.id, k.tjBoost(u.att*int64(k.param(1))*b.raceCount(u.side, raceGod)/100), 0)
+			b.propertyHurt(u, x, k.id, k.tjBoost(b.raceSum(u.side, raceGod, attOf)*int64(k.param(1))/100), 0)
 		}
 		if !t.alive() {
 			return
 		}
 	}
 	if k := u.tal(famShouYao); k != nil && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.baseAtt*int64(k.param(1))*b.raceCount(u.side, raceBeast)/100)
-		u.attachNoHeal = 5086 // 攻击附带禁疗（FAQ：禁疗6 = 回复降低 60%，持续 5 回合；param(2) 5451「带禁疗」是攻击方的标记）：同魔煞，打中后才挂
+		b.tempUp(u, k, b.raceSum(u.side, raceBeast, baseAttOf)*int64(k.param(1))/100) // 初始攻击力（用户规则）
+		u.attachNoHeal = 5086                                                         // 攻击附带禁疗（FAQ：禁疗6 = 回复降低 60%，持续 5 回合；param(2) 5451「带禁疗」是攻击方的标记）：同魔煞，打中后才挂
 	}
 	if k := u.tal(famMoZhu); k != nil && b.chance(k.param(0)) {
 		b.show(u, k.id, u)
-		got := b.heal(u, k.id, u.maxHP*int64(k.param(1))*b.raceCount(u.side, raceGhost)/100)
+		got := b.heal(u, k.id, b.raceSum(u.side, raceGhost, maxHPOf)*int64(k.param(1))/100)
 		if k.tjOn() && got > 0 {
 			b.changeMaxHP(u, k.id, int64(float64(got)*k.tjX()/100))
 		}
@@ -97,19 +104,19 @@ func (b *battle) beforeAttack(u, t *unit) {
 	}
 	for _, k := range u.talAll(famTaChao) {
 		if b.chance(k.param(0)) {
-			b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100) // 「提升 60% 初始攻击力」
+			b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100) // 临时加攻统一以初始（进场）攻击力计算（用户规则）。
 		}
 	}
 	if k := u.tal(famShouWang); k != nil && b.chance(k.param(0)) {
 		b.show(u, k.id, u)
-		b.addShield(u, u.maxHP*int64(k.param(1))*b.raceCount(u.side, raceBeast)/100, true)
+		b.addShield(u, b.raceSum(u.side, raceBeast, maxHPOf)*int64(k.param(1))/100, true)
 	}
 	// 突袭、驱雷 / 踏浪 / 破岩 / 蹈火放在「攻击之前」类（仙帝、人皇、人圣、仙尊、魔主、兽王…）之后、「选取目标」类
 	// （背水、霆威…）之前：官方战报魔主在突袭之前、背水 / 霆威 / 分击在突袭之后。仙尊等群体伤害插在突袭和普攻
 	// 之间会打断突袭的出手动画。
 	b.tuxi(u)
 	// 下面这些加攻类：自带 + 套装同族各自判定（同突袭，用户规则）
-	for _, fam := range []family{famPoYan, famQuLei, famTaLang, famDaoHuo} { // 照描述加初始攻击的 50%
+	for _, fam := range []family{famPoYan, famQuLei, famTaLang, famDaoHuo} { // 初始攻击力的50%，攻击后清除。
 		for _, k := range u.talAll(fam) {
 			if b.chance(k.param(0)) {
 				b.tempUp(u, k, u.baseAtt/2)
@@ -128,24 +135,22 @@ func (b *battle) beforeAttack(u, t *unit) {
 	}
 	for _, k := range u.talAll(famYuBing) {
 		if b.chance(k.param(0)) {
-			b.tempUp(u, k, u.atkBase()*int64(k.param(1))/100+int64(float64(u.atkBase())*k.tjX()/100))
+			u.yubingSwords = u.swords // 「攻击后其身上每有一把剑则保留增加的攻击力的 c%」：按出手时的剑数（攻击后仙剑出手就消散了）
+			b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100+int64(float64(u.baseAtt)*k.tjX()/100))
 		}
 	}
 	if k := u.tal(famTingWei); k != nil && t.maxHP > 0 && b.chance(k.param(0)) {
-		b.tempUp(u, k, u.atkBase()*(t.maxHP-t.hp)/t.maxHP)
+		b.tempUp(u, k, u.baseAtt*(t.maxHP-t.hp)/t.maxHP) // 初始攻击力（用户规则）
 		// 目标濒危（< 25%）时 b% 概率一击必杀（摧毁，不受免疫伤害影响），激发再加 $x%（FAQ）
-		if t.hp*100 < t.maxHP*25 && b.chance(k.param(1)+k.tjPct()) {
+		if t.hp*100 < t.maxHP*25 && b.chance(k.param(1)+k.tjPct()) && !b.buqinGuard(t) {
 			b.destroy(u, t, k.id)
 			if !t.alive() {
 				return
 			}
 		}
 	}
-	if k := u.tal(famPoWang); k != nil {
-		b.onPoWang(u, k)
-	}
-	if k := u.tal(famMieFa); k != nil && (t.tal(famXianYi) != nil || t.tal(famBuQin) != nil) {
-		// 攻击时对具备仙衣 / 不侵的目标伤害提高 a%，且有同等概率清除无敌。伤害提高不是加攻击：结算伤害时乘
+	if k := u.tal(famMieFa); k != nil && (t.tal(famXianYi) != nil || t.tal(famBuQin) != nil || t.tal(famJinShenBoss) != nil) {
+		// 攻击时对具备仙衣、不侵或金身的目标伤害提高 a%，且有同等概率清除无敌。伤害提高在伤害结算时乘
 		// （attack 里 attackTaken 之前，用户确认），界面上攻击不变。
 		b.show(u, k.id, u)
 		u.dmgUp += k.param(0)
@@ -155,19 +160,15 @@ func (b *battle) beforeAttack(u, t *unit) {
 		}
 	}
 	if k := u.tal(famHengChongZhiZhuang); k != nil && k.tjOn() {
-		b.tempUp(u, k, int64(float64(u.atkBase())*k.tjX()/100))
+		b.show(u, k.id, u)
+		b.changeAtt(u, k.id, int64(float64(u.att)*k.tjX()/100))
 	}
 	for _, rb := range raceBane {
 		for _, k := range u.talAll(rb.fam) {
 			if t.Race == rb.race && b.chance(k.param(0)) {
-				b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100)
+				b.tempUp(u, k, u.baseAtt*int64(k.param(1))/100) // 额外提升 b% 初始攻击力
 			}
 		}
-	}
-	if s := u.has(stYizhi); s != nil && t.Race == raceGhost { // 遗志：目标是魔族时额外提升
-		n := u.att * s.val / 100
-		b.changeAtt(u, 0, n)
-		u.tempAtt += n
 	}
 	if k := u.tal(famYiMingYanTian); k != nil {
 		b.onYiMingYanTian(u, k)
@@ -199,8 +200,7 @@ func (b *battle) shenhu(u *unit, k *talent, buff int32) {
 	for _, x := range ts {
 		grow := x.maxHP * 9 / 100
 		b.buff(x, shenhuBuff, 13)
-		b.changeMaxHP(x, shenhuBuff, grow)
-		b.heal(x, shenhuBuff, grow)
+		b.growAndHeal(x, shenhuBuff, grow)
 		if buff != shenhuBuff {
 			b.huwei(u, k, x, buff)
 		}
@@ -208,7 +208,7 @@ func (b *battle) shenhu(u *unit, k *talent, buff int32) {
 }
 
 // huwei：九尾仙车给 x 挂狐尾 x 级（BUFF 5641-5644，新的替换旧的）。狐尾 x（FAQ）：攻击时 (x×6)% 概率触发异态4；
-// 生命上限受到减益时最少保留 (x×x/2 + 8)%（以进入战斗时的上限为准）；天将：保留比例再加
+// 生命上限受到减益时最少保留 (x×x/2 + 8)%（以每次施加狐尾时的上限为准）；天将：保留比例再加
 // （本方带暴走神通的护法数，前后阵都算，至多 4 名）× 激发等级 %。死亡时清除。
 func (b *battle) huwei(u *unit, k *talent, x *unit, buff int32) {
 	lv := int(buff - 5640)
@@ -219,7 +219,7 @@ func (b *battle) huwei(u *unit, k *talent, x *unit, buff int32) {
 		b.rmBuff(x, x.huweiBuff)
 	}
 	b.buff(x, buff, 13)
-	floor := lv*lv/2 + 8
+	floor := lv*lv + 16 // 半个百分点为单位，保留狐尾1、3的 0.5%。
 	if k.tjOn() {
 		n := 0
 		for _, y := range b.units[u.side] {
@@ -227,9 +227,11 @@ func (b *battle) huwei(u *unit, k *talent, x *unit, buff int32) {
 				n++
 			}
 		}
-		floor += min(n, 4) * k.tj
+		floor += 2 * min(n, 4) * k.tj
 	}
-	x.huweiBuff, x.huweiLv, x.huweiFloor = buff, lv, floor
+	x.huweiBuff, x.huweiLv = buff, lv
+	// 神之护3先增加上限，随后挂狐尾；同级重复施加也覆盖旧快照。
+	x.huweiFloor = (x.maxHP*int64(floor) + 199) / 200
 }
 
 const shenhuBuff = 5213 // 神之护3
@@ -302,11 +304,11 @@ func (b *battle) followUps(u, t *unit, dmg int64) {
 		}
 	}
 	// 修罗隐身激发：可连续触发（图鉴 FAQ）
-	for k := u.tal(famXiuLuoYinShen); k != nil && k.tjOn() && cur().alive() && u.alive() && !b.over && u.xiuluo > 0 &&
+	for k := u.tal(famXiuLuoYinShen); k != nil && k.tjOn() && !u.lastKill && cur().alive() && u.alive() && !b.over && u.xiuluo > 0 &&
 		b.chance(5*k.tj+15*u.xiuluo); {
 		b.setXiuluo(u, u.xiuluo-1)
 		b.show(u, k.id, u)
-		b.attackAction(u, cur(), 100, atkFollow)
+		b.attackAction(u, cur(), 100, atkXiuluo)
 	}
 	if u.extraAtk { // 天地灵气
 		u.extraAtk = false
@@ -326,25 +328,47 @@ func (b *battle) followUps(u, t *unit, dmg int64) {
 // launchEffects 是「发动攻击」时机的神通（talentset trigger：挥扫、撞击；化血在 attackEffects、分击在
 // attackAction 里），每次攻击行为都判定，三板斧、轩辕剑的每一击也触发。
 func (b *battle) launchEffects(u, t *unit, dmg int64) {
-	if k := u.tal(famHuiSao); k != nil && u.atkLanded && b.chance(k.param(0)) { // 命中就触发：打无敌目标时相邻照样受伤
-		if adj := b.adjacent(splashCenter(u, t)); len(adj) > 0 { // 原攻击目标的左右（被守卫代挨时也是）
+	if k := u.tal(famHuiSao); k != nil && u.atkLanded && u.atkBasis > 0 && b.chance(k.param(0)) {
+		if adj := b.adjacent(t); len(adj) > 0 { // 守卫、元形代承后，以实际承伤者为中心。
 			b.show(u, k.id, adj...)
+			basis := u.atkBasis // 副目标死亡技可能嵌套攻击，不得覆盖本次溅射基数。
 			for _, x := range adj {
-				b.hurt(u, x, k.id, k.tjBoost(u.att*int64(k.param(1))/100), true) // 抓包：自身攻击 × b%
+				// 主目标减伤前伤害的一半，再逐个结算副目标自身的减伤、结界与无敌。
+				b.hurt(u, x, k.id, basis/2, true)
 			}
 		}
 	}
-	if k := u.tal(famZhuangJi); k != nil && t.alive() && b.chance(k.param(0)) {
+	if k := u.tal(famZhuangJi); k != nil && u.atkLanded && t.alive() && b.chance(k.param(0)) {
 		cost := u.maxHP * int64(k.param(1)) / 100 // 扣除自身血量时可以导致阵亡（FAQ）
 		b.show(u, k.id, t)
 		b.hurt(u, u, k.id, cost, false)
-		b.hurt(u, t, k.id, cost*2, true) // 第二段：物理伤害（非攻击行为）
+		b.zhuangjiHurt(u, t, k.id, cost*2)
 	}
 }
 
-// attachDebuffs：先加状态再结算伤害的一组——魔煞锢魂、兽妖禁疗（「攻击前…使攻击附带」）和驱雷 / 踏浪 / 破岩 / 蹈火的
-// 状态，命中后、扣血之前挂到实际受击者身上（被闪避不挂；这一下打死目标时锢魂照样生效）。削弱、毒爪、弱化、
-// 会猎、象形是「攻击后」，在扣血之后，见 attackEffects。
+// 撞击的第二段是独立物理伤害：主攻击命中后，撞击单独检查元形代承。
+// 在自身消耗结算后重查保护者，避免死亡技已使保护者阵亡或离场时仍由其代承。
+func (b *battle) zhuangjiHurt(u, target *unit, id int32, n int64) {
+	target = b.yuanxingExtraTarget(u, target)
+	b.hurt(u, target, id, n, true)
+}
+
+// 化血、撞击独立检查元形，不继承主攻击的鬼斧绕过结果。
+func (b *battle) yuanxingExtraTarget(u, target *unit) *unit {
+	if target.alive() && target.front() && u.side != target.side {
+		for _, guard := range b.adjacent(target) {
+			if guard.yuanxingActive && guard.tal(famYuanXing) != nil {
+				b.show(guard, attackGuard, target)
+				b.show(guard, attackGuard, guard) // 代承演出后回位，避免客户端卡牌重叠。
+				target = guard
+				break
+			}
+		}
+	}
+	return target
+}
+
+// attachDebuffs：魔煞锢魂、兽妖禁疗在命中后、扣血前施加给实际受击者。
 func (b *battle) attachDebuffs(u, t *unit) {
 	if t.side != u.side && t.alive() {
 		if u.attachSoul {
@@ -357,15 +381,20 @@ func (b *battle) attachDebuffs(u, t *unit) {
 	u.attachSoul, u.attachNoHeal = false, 0
 }
 
-// elemAttacks：替换攻击类（驱雷 / 踏浪 / 破岩 / 蹈火，21571–21601）发动时附带的状态——驱雷 麻痹、踏浪 僵化（下次行动后
-// 清除）、破岩 毒砂5、蹈火 燃烧5（持续到战斗结束）。官方战报：破岩8 命中后 BUFF 5035。
+const talangIceBuff = 5001
+
+// elemAttacks 记录替换攻击的属性和伤害前的附加状态。踏浪的僵化单独判定抵挡。
 var elemAttacks = []struct {
 	fam  family
 	buff int32
-}{{famQuLei, 5011}, {famTaLang, 5001}, {famPoYan, 5035}, {famDaoHuo, 5025}}
+	kind int // 属性：0 道 1 土 2 水 3 火 4 雷
+}{{famQuLei, 5011, 4}, {famTaLang, 0, 2}, {famPoYan, 5035, 1}, {famDaoHuo, 5025, 3}, {famTaChao, 0, 2}}
 
 // elemFired：这次攻击行为是替换攻击类的属性攻击。
 func elemFired(u *unit) bool {
+	if u.has(stFireEnchant) != nil {
+		return true
+	}
 	for _, e := range elemAttacks {
 		if u.fired[e.fam] > 0 {
 			return true
@@ -374,16 +403,30 @@ func elemFired(u *unit) bool {
 	return false
 }
 
-// elemDebuffs：属性攻击先挂状态（在先攻、闪避、伤害之前，用户规则）；可被分水 / 逆雷 / 辟土 / 返火、法术结界、不侵免疫。
+// elemDebuffs 施加属性攻击的通用附带状态。
 func (b *battle) elemDebuffs(u, t *unit) {
 	for _, e := range elemAttacks {
-		if u.fired[e.fam] > 0 && t.alive() {
+		if e.buff != 0 && u.fired[e.fam] > 0 && t.alive() {
 			b.applyBuff(u, t, e.buff)
 		}
 	}
 }
 
-// splashCenter 是挥扫、负重、贪吃这类「对目标相邻单位」效果的中心：这次攻击行为的原攻击目标（被守卫 / 元形代挨时
+// talangStiff 在攻击判定前处理踏浪。不侵、分水各按原概率抵挡，
+// 其余情况先挂僵化，结界和无敌留到伤害结算。
+func (b *battle) talangStiff(t *unit) {
+	if k := t.tal(famBuQin); k != nil && b.chance(k.param(0)) {
+		b.show(t, k.id, t)
+		return
+	}
+	if k := t.tal(famFenShui); k != nil && b.chance(k.param(0)+k.tjPct()) {
+		b.show(t, k.id, t)
+		return
+	}
+	b.setEnemyStatus(t, stStiff, 0, 1, true, talangIceBuff, slotDebuff)
+}
+
+// splashCenter 是负重等「对目标相邻单位」效果的中心：这次攻击行为的原攻击目标（被守卫 / 元形代挨时
 // 不是代挨的人）；原目标已不在敌方阵上时退回实际受击者 t。
 func splashCenter(u, t *unit) *unit {
 	if a := u.atkTarget; a != nil && a.side == t.side && a.front() {
@@ -424,9 +467,8 @@ func (b *battle) selfAfterAttack(u, t *unit, dmg int64) {
 		}
 	}
 	if k := u.tal(famTianWeiJiangLin); k != nil { // 普攻被闪避也触发
-		// 攻击后对敌我全体护法（含自己）造成当前攻击 a% 的物理伤害（官方战报：友方 = 攻击 40%，
-		// 敌方再翻倍是激发「对敌伤害提升」；SUB_HP 里有武则天自己）。被打中的照常触发受击效果（坚韧、气甲在 hurt
-		// 里，润泽见 runze）。
+		// 攻击后对敌我全体护法（含自己）造成当前攻击 a% 的道属性伤害。
+		// 对敌伤害提升仍按激发等级结算；属性伤害走仙衣、润泽与法术结界。
 		var all []*unit
 		for side := range b.units {
 			all = append(all, b.frontOf(side)...)
@@ -443,9 +485,7 @@ func (b *battle) selfAfterAttack(u, t *unit, dmg int64) {
 				if x == u && b.invincible(u) {
 					n = 0 // 打到自己也受无敌保护（hurt 对自身来源的伤害不看无敌）
 				}
-				if b.hurt(u, x, k.id, n, true) > 0 {
-					b.runze(x)
-				}
+				b.propertyHurt(u, x, k.id, n, 0)
 			}
 		}
 	}
@@ -459,16 +499,26 @@ func (b *battle) selfAfterAttack(u, t *unit, dmg int64) {
 		if k == nil || !u.alive() {
 			continue
 		}
+		center := splashCenter(u, t)
+		// 负重只判定一次触发；同一个中心的主目标与左右一起生效。
+		// 贪吃仍保留原来的逐邻位概率。
+		if fam == famFuZhong && !b.chance(k.param(0)) {
+			continue
+		}
 		var hit []*unit
-		for _, x := range b.adjacent(splashCenter(u, t)) {
-			if b.chance(k.param(0)) {
+		for _, x := range b.adjacent(center) {
+			if fam == famFuZhong || b.chance(k.param(0)) {
 				hit = append(hit, x)
 			}
 		}
-		if len(hit) == 0 {
+		if len(hit) == 0 && fam == famTanChi {
 			continue
 		}
-		b.show(u, k.id, hit...)
+		targets := hit
+		if fam == famFuZhong {
+			targets = append([]*unit{center}, hit...)
+		}
+		b.show(u, k.id, targets...)
 		sum := u.atkDealt // 贪吃：对攻击目标按伤害值（同吸血），对相邻目标按将要造成的伤害计（FAQ）
 		for _, x := range hit {
 			n := u.att * int64(k.param(1)) / 100
@@ -490,7 +540,7 @@ func (b *battle) selfAfterAttack(u, t *unit, dmg int64) {
 			continue
 		}
 		buff := int32(k.param(2))
-		for _, x := range append([]*unit{t}, hit...) {
+		for _, x := range targets {
 			if s := x.has(stTaunt); s != nil && s.buff >= 5471 && s.buff <= 5480 && s.src != nil && s.src.alive() {
 				continue // 金身罗汉的嘲讽优先级高于至尊宝的（FAQ 负重）
 			}
@@ -516,7 +566,7 @@ func (b *battle) selfAfterAttack(u, t *unit, dmg int64) {
 			b.propertyHurt(u, x, k.id, u.att*int64(k.param(2))/100+int64(float64(u.att)*k.tjX()/100), 2) // 水属性
 		}
 	}
-	if st := t; u.swords > 0 {
+	if st := t; u.swords > 0 || u.tal(famCangJianYuHua) != nil {
 		// 飞剑打这次攻击原定的目标：守卫 / 元形代承之后目标指回原来的人
 		if o := u.atkTarget; o != nil && o.alive() && o.side != u.side {
 			st = o
@@ -543,7 +593,7 @@ func (b *battle) selfAfterAttack(u, t *unit, dmg int64) {
 // attackEffects 是攻击特效：作用在实际承受这次攻击的单位 t 上（守卫 / 元形代挨时是护卫者；化血、弱化、削弱、
 // 毒爪、会猎、象形、驱逐都随实际受击者走）。每次攻击行为都判定，包括三板斧、轩辕剑。
 func (b *battle) attackEffects(u, t *unit, dmg int64) {
-	if k := u.tal(famQuZhu); k != nil && t.alive() && t.front() && b.chance(k.param(0)) {
+	if k := u.tal(famQuZhu); k != nil && u.atkLanded && t.side != u.side && t.alive() && t.front() && b.chance(k.param(0)) && !b.buqinGuard(t) {
 		if x := b.quzhuPick(t); x != nil {
 			b.show(u, k.id, t)
 			b.quzhu(t, x)
@@ -561,6 +611,8 @@ func (b *battle) attackEffects(u, t *unit, dmg int64) {
 			b.show(u, k.id, t)
 			if b.addStatus(t, stWeak, cut, 1, true, k.Buff, slotDebuff) {
 				b.changeAtt(t, k.id, -cut)
+				// 「并降低对方 a 点先攻值，进行一次行动后清除」（原来没做）
+				b.addStatus(t, stSlow, int64(k.param(0)), 1, true, 0, slotDebuff)
 			}
 		}
 		if k := u.tal(famDuZhao); k != nil && b.chance(k.param(0)) && !b.showResist(u, k, t) {
@@ -574,19 +626,20 @@ func (b *battle) attackEffects(u, t *unit, dmg int64) {
 	if !t.alive() {
 		return
 	}
-	if k := u.tal(famHuaXue); k != nil && b.chance(k.param(0)) {
+	if k := u.tal(famHuaXue); k != nil && hit && b.chance(k.param(0)) { // 「攻击命中后」：被闪避不触发
+		victim := b.yuanxingExtraTarget(u, t)
 		// 目标上限 b% 的生命流失，不超过自身攻击 × c（官方战报：74852 = 18713×4）
-		n := t.maxHP * int64(k.param(1)) / 100
+		n := victim.maxHP * int64(k.param(1)) / 100
 		if c := k.param(2); c > 0 {
 			n = min(n, u.att*int64(c))
 		}
-		b.show(u, k.id, t)
-		b.loseHP(u, t, k.id, n) // 生命流失：不受结界、无敌、诈死影响（FAQ）
+		b.show(u, k.id, victim)
+		b.loseHP(u, victim, k.id, n) // 生命流失：不受结界、无敌、诈死影响（FAQ）
 	}
 	if hit && t.alive() {
 		if k := u.tal(famRuoHua); k != nil && t.alive() && b.chance(k.param(0)) {
 			b.show(u, k.id, t)
-			cut := t.att * int64(k.param(1)) / 100
+			cut := min(t.att*int64(k.param(1))/100, u.att) // 「降低的攻击力数值不能超过自身当前攻击力的 100%」
 			b.changeAtt(t, k.id, -cut)
 			if k.tjOn() && b.chance(k.tjPct()) {
 				b.changeAtt(u, k.id, cut)
@@ -636,7 +689,8 @@ func (b *battle) roarTJ(u *unit, k *talent, maxHP bool) {
 		pct := k.tjParam(1)
 		for _, x := range b.allies(u) {
 			if maxHP {
-				b.changeMaxHP(x, k.id, int64(float64(x.maxHP)*pct/100))
+				grow := int64(float64(x.maxHP) * pct / 100)
+				b.growAndHeal(x, k.id, grow)
 			} else {
 				b.changeAtt(x, k.id, int64(float64(x.att)*pct/100))
 			}
@@ -658,10 +712,29 @@ func (b *battle) cannon(u *unit, k *talent, t *unit) {
 	b.loseHP(u, t, k.id, u.baseAtt*int64(k.param(0))/100)
 }
 
+// biXue：碧血——受击后 a% 概率为队友回复 b%×自身上限。FAQ「只要受到[攻击行为]即可触发」：被闪避也算（attack 的
+// miss 里也调用）。
+func (b *battle) biXue(t *unit) {
+	if k := t.tal(famBiXue); k != nil && t.alive() && b.chance(k.param(0)) {
+		if mates := b.teammates(t); len(mates) > 0 {
+			b.show(t, k.id, mates...)
+			n := t.maxHP * int64(k.param(1)) / 100 // b% × 自身生命上限
+			if k.tjOn() && b.chance(k.tjPct()) {
+				n *= 2 // 激发：$x% 概率双倍回复
+			}
+			for _, x := range mates {
+				b.heal(x, k.id, n)
+			}
+		}
+	}
+}
+
 // onHit：t 被 u 的攻击行为命中后（t 还活着）。
 func (b *battle) onHit(u, t *unit, dmg int64, kind atkKind) {
 	b.hanbingStiff(u, t)
-	if k := t.tal(famHuTi); k != nil && dmg > 0 && b.chance(k.param(0)) {
+	// 突袭：「必中且不会触发反击、护体」（描述；原来没拦）
+	tuxi := u.fired[famTuXi] > 0
+	if k := t.tal(famHuTi); k != nil && dmg > 0 && !tuxi && b.chance(k.param(0)) {
 		b.show(t, k.id, u)
 		n := dmg*int64(k.param(1))/100 + int64(float64(dmg)*k.tjX()/100) // 激发：额外 $x% 原伤害
 		b.hurt(t, u, k.id, min(n, t.maxHP), true)                        // 物理伤害，不超过护体护法当前上限（FAQ）
@@ -673,16 +746,7 @@ func (b *battle) onHit(u, t *unit, dmg int64, kind atkKind) {
 			b.propertyHurt(t, x, k.id, t.maxHP*int64(k.param(1))/100+int64(float64(t.att)*k.tjX()/100), 0) // 激发：+$x% 当前攻击
 		}
 	}
-	if k := t.tal(famBiXue); k != nil && b.chance(k.param(0)) {
-		if x := b.mostHurtExcept(t); x != nil { // 「为队友回复」：前阵其他友方，不含自己
-			b.show(t, k.id, x)
-			n := t.maxHP * int64(k.param(1)) / 100 // b% × 自身生命上限
-			if k.tjOn() && b.chance(k.tjPct()) {
-				n *= 2 // 激发：$x% 概率双倍回复
-			}
-			b.heal(x, k.id, n)
-		}
-	}
+	b.biXue(t)
 	if k := t.tal(famMiaoShou); k != nil {
 		if x := b.mostHurt(t.side); x != nil && x.hp < x.maxHP {
 			b.show(t, k.id, x)
@@ -698,15 +762,18 @@ func (b *battle) onHit(u, t *unit, dmg int64, kind atkKind) {
 			b.show(t, k.id, adj...)
 			for _, x := range adj {
 				b.addShield(t, b.cutShield(x, t.maxHP*10/100, true), true)
-				if b.addStatus(x, stConfuse, 0, 1, true, 5051, slotDebuff) {
-					d := min(x.maxHP*int64(k.param(1))/100, x.maxHP-1)
-					b.changeMaxHP(x, k.id, -d)
-					b.changeMaxHP(t, k.id, k.tjBoost(d))
+				shielded := x.mshield > 0
+				switch {
+				case b.addStatus(x, stConfuse, 0, 1, true, 5051, slotDebuff):
+					x.shihouBy, x.shihouTal = t, k // 混乱结束后才吸取生命上限（clearStatus → shihouDrain，用户确认）
+				case shielded:
+					b.shihouDrain(x, t, k) // 吸完还有法术结界：混乱被免疫，但依然吸取生命上限（FAQ）
 				}
 			}
 		}
 	}
 	if k := t.tal(famCangJianYuHua); k != nil && k.tjOn() && b.chance(int(k.tjW())) {
+		// 天将：召唤一柄仙剑分配给己方前阵随机护法
 		if allies := b.allies(t); len(allies) > 0 {
 			x := allies[b.rng.IntN(len(allies))]
 			b.show(t, k.id, x)
@@ -714,7 +781,7 @@ func (b *battle) onHit(u, t *unit, dmg int64, kind atkKind) {
 		}
 	}
 	// 反击的攻击行为不能再触发反击（FAQ）；先攻的那一下也不触发反击——FAQ 允许反击触发先攻，两者都放开会无限互相触发
-	if k := t.tal(famFanJi); k != nil && kind != atkCounter && kind != atkPre && u.alive() && t.alive() && b.chance(k.param(0)) {
+	if k := t.tal(famFanJi); k != nil && kind != atkCounter && kind != atkPre && !tuxi && u.alive() && t.alive() && b.chance(k.param(0)) {
 		b.show(t, k.id, t)
 		b.attackAction(t, u, max(k.param(1), 1), atkCounter)
 	}
@@ -728,7 +795,7 @@ func (b *battle) showResist(u *unit, k *talent, t *unit) bool {
 
 // onRanHun：攻击前——燃魂。
 func (b *battle) onRanHun(u *unit, k *talent) {
-	up := u.att * int64(k.param(1)) / 100
+	up := u.baseAtt * int64(k.param(1)) / 100
 	// 官方战报：ACT_DO(燃魂 → 自己) → ATT_CHANGE → SUB_HP(燃魂，自己) → BLOODPOOL_IN{自己, 蓄入量}
 	b.tempUp(u, k, up)
 	in := b.loseHP(u, u, k.id, max(min(u.att/2, u.hp-5), 0)) // 生命流失，最多扣到 5（FAQ）；失去的生命蓄入本方血池
@@ -748,7 +815,7 @@ func (b *battle) onRenSheng(u *unit, k *talent) {
 	if b.chance(k.param(0) * int(n)) {
 		foes := b.foes(u)
 		b.show(u, k.id, foes...)
-		blind := int64(20) // buff 5042 盲目2：攻击有 20% 几率无法命中
+		blind := int64(10 * k.param(1)) // 盲目b：攻击有 10%×b 几率无法命中（人圣10 是盲目5 = 50%，原来固定按盲目2 算）
 		for _, x := range foes {
 			b.addStatus(x, stBlind, blind, 1, true, int32(k.param(2)), slotDebuff)
 			if k.tjOn() && b.chance(k.tjPct()) {
@@ -760,11 +827,9 @@ func (b *battle) onRenSheng(u *unit, k *talent) {
 
 // onPoWang：攻击前——破妄。
 func (b *battle) onPoWang(u *unit, k *talent) {
-	// 攻击前各有 a% 概率将对面三位护法生命上限恢复到进入战斗的初始值
-	//（Fighter.MaxHP；changeMaxHP 会把超出上限的当前生命一并压回）。
-	ts := b.facing3(u) // 对面三位 = 对位及其左右（锁定站位）
+	// 对位及左右独立判定，演出只包含成功目标。
 	var hit []*unit
-	for _, x := range ts {
+	for _, x := range b.facing3(u) {
 		if b.chance(k.param(0)) {
 			hit = append(hit, x)
 		}
@@ -772,7 +837,7 @@ func (b *battle) onPoWang(u *unit, k *talent) {
 	if len(hit) > 0 {
 		b.show(u, k.id, hit...)
 		for _, x := range hit {
-			if d := int64(x.MaxHP) - x.maxHP; d != 0 {
+			if d := x.baseHP - x.maxHP; d != 0 {
 				b.changeMaxHP(x, k.id, d)
 			}
 		}
@@ -822,9 +887,30 @@ func (b *battle) onSheHunShu(u *unit, k *talent) {
 			u.borrowed = append(u.borrowed, g.fam)
 			if k.tjOn() {
 				d := int64(float64(u.maxHP) * k.tjX() / 100)
-				b.changeMaxHP(u, k.id, d)
-				b.heal(u, k.id, d)
+				b.growAndHeal(u, k.id, d)
 			}
 		}
 	}
+}
+
+// shihouDrain：狮吼——吸取 x 的 b% 生命上限给文殊 by（激发：吸取值再提升 $x%）。
+func (b *battle) shihouDrain(x, by *unit, k *talent) {
+	if !x.alive() {
+		return
+	}
+	d := min(x.maxHP*int64(k.param(1))/100, x.maxHP-1)
+	taken := -b.changeMaxHP(x, k.id, -d)
+	if by.alive() && taken > 0 {
+		b.changeMaxHP(by, k.id, k.tjBoost(taken))
+	}
+}
+
+// buqinGuard：不侵「也不会受到霆威 / 驱逐效果的影响」——带不侵的护法不会被霆威一击必杀，也不会被驱逐（驱逐、神威、
+// 芭蕉扇激发；脱帽退敌不受不侵影响，FAQ）。不按概率，带了就免疫；挡下时演出不侵。
+func (b *battle) buqinGuard(t *unit) bool {
+	if k := t.tal(famBuQin); k != nil {
+		b.show(t, k.id, t)
+		return true
+	}
+	return false
 }

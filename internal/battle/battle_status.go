@@ -23,8 +23,9 @@ const (
 	stTaunt                        // 嘲讽：val = 攻击来源时攻击力降低 %，src = 来源（buff 5471-5480 / 5601-5604）
 	stZhanhu                       // 战呼：val = 加的攻击，下次行动后扣回（buff 5261-5270：+10%×等级）
 	stXuming                       // 续命丹：val = 致命伤害时保留的上限 %（buff 5611：11%）
+	stGhostAxe                     // Ghost axe: guard bypass chance and kill revival, expires at round end.
 	stHidden                       // 隐身：无法成为物理攻击目标，到当前回合结束（buff 5111）
-	stYizhi                        // 遗志：val = 攻击魔族时额外提升 %（buff 5645-5648）
+	stYizhi                        // 遗志（buff 5645-5648）：攻击提升在附加时一次算好（魔族护法再 +10%）
 	stSlow                         // 凝滞：val = 先攻减值，持续 1 回合（人圣激发）
 	stFireEnchant                  // 火附魔（烈焰怒吼 buff 5649–5651）：val = 差值转生命流失的 %（法术等级 × a），下次行动后清除
 	stBurn                         // 燃烧（只用于抵抗判定：实际效果在 unit.poison）
@@ -56,13 +57,13 @@ var elemGuards = []struct {
 const noHealRounds = 5
 
 type status struct {
-	val      int64
-	left     int  // 剩余行动次数（byAction）或回合数
-	byAction bool // 「下次行动后清除」
-	buff     int32
-	slot     int
 	src      *unit // 嘲讽来源
-	foe      bool  // 敌方施加的（addStatus）：负面状态，可被清除类效果移除
+	val      int64
+	left     int // 剩余行动次数（byAction）或回合数
+	slot     int
+	buff     int32
+	byAction bool // 「下次行动后清除」
+	foe      bool // 敌方施加的（addStatus）：负面状态，可被清除类效果移除
 	// fresh：行动中敌方挂到行动者自己身上的「下次行动后清除」负面状态（如攻击蛟魔王被寒冰甲僵化 / 激发捆缚）——这次行动
 	// 结束时不算，到它下一次行动后才清除（之前当场就被清掉，等于没生效）
 	fresh bool
@@ -73,12 +74,17 @@ func (b *battle) addStatus(t *unit, key stKey, val int64, left int, byAction boo
 	if !t.alive() || resistable[key] && b.resist(t, key) {
 		return false
 	}
+	b.setEnemyStatus(t, key, val, left, byAction, buff, slot)
+	return true
+}
+
+// setEnemyStatus 施加已通过抵抗判定的敌方状态。
+func (b *battle) setEnemyStatus(t *unit, key stKey, val int64, left int, byAction bool, buff int32, slot int) {
 	b.setStatus(t, key, val, left, byAction, buff, slot)
 	if s := t.status[key]; s != nil {
 		s.foe = true
 		s.fresh = byAction && b.acting == t
 	}
-	return true
 }
 
 // resist：敌方给予的负面持续状态——有法术结界时免疫（FAQ：「持续状态施放时可被[法术结界]免疫」，官方战报 5861 次
@@ -87,7 +93,14 @@ func (b *battle) resist(t *unit, key stKey) bool {
 	if t.mshield > 0 {
 		return true
 	}
+	if ti := t.bossTal(qjBuXiu); ti != nil && key == stNoSoul && b.chance(tparam(ti, 0)) {
+		return true // 取经「不朽」：不受锢魂
+	}
 	if k := t.tal(famBuQin); k != nil && b.chance(k.param(0)) {
+		b.show(t, k.id, t)
+		return true
+	}
+	if k := t.tal(famJinShenBoss); k != nil && b.chance(k.param(0)) {
 		b.show(t, k.id, t)
 		return true
 	}
@@ -139,6 +152,11 @@ func (b *battle) clearStatus(t *unit, key stKey) {
 	}
 	delete(t.status, key)
 	switch key {
+	case stConfuse:
+		if by, k := t.shihouBy, t.shihouTal; by != nil {
+			t.shihouBy, t.shihouTal = nil, nil
+			defer b.shihouDrain(t, by, k) // 狮吼：混乱结束（图标去掉）后吸取生命上限
+		}
 	case stWeak:
 		b.changeAtt(t, 0, s.val)
 	case stTempMax:
@@ -156,6 +174,7 @@ func (b *battle) clearStatus(t *unit, key stKey) {
 // leaveClear：阵亡 / 进入后阵时清除持续状态（FAQ：负面状态「阵亡、进入后阵则清除」，锢魂不清除；燃烧、毒砂
 // 持续到战斗结束）。dead 时增益也一并清掉（官方战报：DIE 之后逐个 RM_BUFF）。按 stKey 顺序，输出稳定。
 func (b *battle) leaveClear(t *unit, dead bool) {
+	t.yuanxingActive = false
 	keys := make([]stKey, 0, len(t.status))
 	for k := range t.status {
 		if k != stNoSoul && (dead || slices.Contains(benchClear, k)) {
@@ -167,6 +186,8 @@ func (b *battle) leaveClear(t *unit, dead bool) {
 		s := t.status[k]
 		delete(t.status, k)
 		switch k {
+		case stConfuse:
+			t.shihouBy, t.shihouTal = nil, nil // 阵亡 / 进后阵清掉的混乱不算「结束后吸取」
 		case stWeak:
 			t.att += s.val // 削弱还回（不演出：阵亡 / 后阵）
 		case stZhanhu:
@@ -211,7 +232,6 @@ func (b *battle) leaveClear(t *unit, dead bool) {
 		b.rmPoisonIcon(t, p)
 	}
 	t.poison = kept
-	b.burnIcon(t)
 	if dead && t.dusha > 0 { // 毒砂：持续到战斗结束，只在阵亡时清除
 		if t.dushaBuff != 0 {
 			b.rmBuff(t, t.dushaBuff)
@@ -250,7 +270,7 @@ func (b *battle) leaveClear(t *unit, dead bool) {
 }
 
 // benchClear 是进入后阵时清除的负面状态。
-var benchClear = []stKey{stBlind, stConfuse, stBind, stSilence, stNoHeal, stWeak, stZaoyao, stStiff, stTaunt, stSlow, stZhanhu, stHidden}
+var benchClear = []stKey{stBlind, stConfuse, stBind, stSilence, stNoHeal, stWeak, stZaoyao, stStiff, stTaunt, stSlow, stZhanhu, stHidden, stGhostAxe}
 
 // tickStatus：byAction=true 在单位行动后调用，false 在回合结束时调用。
 func (b *battle) tickStatus(t *unit, byAction bool) {
@@ -316,4 +336,23 @@ func (b *battle) clearOneDebuff(t *unit) bool {
 func (b *battle) clearAllDebuffs(t *unit) {
 	for b.clearOneDebuff(t) {
 	}
+}
+
+// buffKeys 是增益的持续状态（驱散能清的）。
+var buffKeys = []stKey{stTempMax, stImmune, stZhanhu, stXuming, stHidden, stYizhi, stFireEnchant, stZhasi, stGhostAxe}
+
+// clearAllBuffs：驱散（法术特效 sp 12，驱灾辟邪）——移除目标身上的所有增益状态与神之力。
+func (b *battle) clearAllBuffs(t *unit) {
+	for _, k := range buffKeys {
+		if s := t.status[k]; s != nil && !s.foe {
+			b.clearStatus(t, k)
+		}
+	}
+	if t.shenliAtt > 0 {
+		b.changeAtt(t, 0, -t.shenliAtt)
+	}
+	if t.shenliShown != 0 {
+		b.rmBuff(t, t.shenliShown)
+	}
+	t.shenliPct, t.shenliAtt, t.shenliShown = 0, 0, 0
 }

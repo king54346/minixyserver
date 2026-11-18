@@ -6,6 +6,18 @@ func (b *battle) foes(u *unit) []*unit { return b.frontOf(1 - u.side) }
 
 func (b *battle) allies(u *unit) []*unit { return b.frontOf(u.side) }
 
+// teammates are living allied front-row units other than the skill owner.
+// "我方/友方" skills still use allies when the owner is an eligible target.
+func (b *battle) teammates(u *unit) []*unit {
+	var out []*unit
+	for _, x := range b.frontOf(u.side) {
+		if x != u {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
 // team 是 side 一方所有存活且在场的护法（前阵 + 后阵）。「护法处于后阵也可触发」的神通找载体用它，不要用 allies。
 func (b *battle) team(side int) []*unit {
 	var out []*unit

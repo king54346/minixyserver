@@ -120,11 +120,12 @@ func (b *battle) zfSync(u *unit) {
 	}
 	if d := want[1] - u.zfFixed[1]; d != 0 {
 		prev := u.maxHP
-		newMax := max(prev+d, 1)
-		d = newMax - prev
+		base := max(u.baseHP+d, 1)
+		newMax := min(max(prev+d, 1), base*8)
+		change := newMax - prev
 		hp := min(max(u.hp*newMax/max(prev, 1), 1), newMax)
-		if d > 0 {
-			b.zfMaxHP(u, d)
+		if change > 0 {
+			b.zfMaxHP(u, change)
 		}
 		if dh := hp - u.hp; dh != 0 {
 			cmd, n := CmdAddHP, dh
@@ -134,11 +135,11 @@ func (b *battle) zfSync(u *unit) {
 			u.hp = hp
 			b.hpCmd(cmd, 0, u, n)
 		}
-		if d < 0 {
-			b.zfMaxHP(u, d)
+		if change < 0 {
+			b.zfMaxHP(u, change)
 		}
-		u.MaxHP += int32(d) // 初始生命上限同样加减
-		u.zfFixed[1] += d
+		u.zfFixed[1] += base - u.baseHP
+		u.baseHP = base
 	}
 }
 

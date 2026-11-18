@@ -1,11 +1,13 @@
 package battle
 
+import "turnrpg/internal/gamedata"
+
 // 受到伤害时触发的神通：属性易伤 / 减免、攻击减伤、伤害转移与代承。
 // 抵抗持续效果的不侵、分水见 battle_status.go 的 resist；分水的反伤在 propertyHurt。
 
 func init() {
 	register(
-		famDaoYiShang, famTuYiShang, famShuiYiShang, famHuoYiShang, famLeiYiShang, famBuQin, famFenShui, famHanBingJia, famWuZhiShan, famYueZhiAnMian, famFanPuGuiZhen, famLeiYingBiHu,
+		famDaoYiShang, famTuYiShang, famShuiYiShang, famHuoYiShang, famLeiYiShang, famBuQin, famJinShenBoss, famBuMieBoss, famFenShui, famHanBingJia, famWuZhiShan, famYueZhiAnMian, famFanPuGuiZhen, famLeiYingBiHu,
 		famWanXianLaiChao,
 	)
 }
@@ -50,14 +52,11 @@ func (b *battle) hanbingStiff(u, t *unit) {
 	}
 }
 
-// attackTaken：普攻伤害落到 victim 前的减伤（五指山、脱帽退敌的蓄力、嘲讽来源）。
+// attackTaken：普攻伤害落到 victim 前的减伤（五指山、嘲讽来源）。
 func (b *battle) attackTaken(u, victim *unit, dmg int64) int64 {
 	dmg = raceBoost(u, victim, dmg)
 	if k := victim.tal(famWuZhiShan); k != nil {
 		dmg -= dmg * int64(k.param(0)) / 100
-	}
-	if k := victim.tal(famTuoMaoTuiDi); k != nil && victim.charge > 0 {
-		dmg -= dmg * int64(min(victim.charge*k.param(0), 80)) / 100 // 每层蓄力减免 a%，上限 80%
 	}
 	if s := u.has(stTaunt); s != nil && s.src == victim {
 		dmg -= dmg * s.val / 100
@@ -75,10 +74,16 @@ func raceBoost(u, t *unit, n int64) int64 {
 
 // leiying：雷影庇护（用户说明）——带遁让的护法受到致命伤害时（物理、法术都算），雷震子自己承受这次伤害，
 // 让它遁入后阵。只要本方有带遁让的护法就会发动（雷震子在后阵也算），整场至多 a 次（4 级 4 次），遁让护法自己
-// 遁让的次数不计在内；只有雷震子被僵化才不发动（tal 返回 nil）。在伤害结算的最前面判定（先于坚韧、气甲等：
-// 致命的这一下先由雷震子挡）。返回 true 表示伤害已被代承。
+// 遁让的次数不计在内；只有雷震子被僵化才不发动（tal 返回 nil）。在伤害结算的最前面判定（先于坚韧等：致命的
+// 这一下先由雷震子挡，气甲已在 fatal 里按上限折算；换人顺序与遁让激发返伤见 leiyingSwapTo 与下方结算）。
+// 返回 true 表示伤害已被代承。
 func (b *battle) leiying(src, t *unit, n int64, physical bool) bool {
-	if t.tals[famDunRang] == nil || !t.front() || !b.fatal(t, n, physical) {
+	dr := t.tals[famDunRang]
+	if dr == nil || !t.front() {
+		return false
+	}
+	dmg, kill := b.fatal(t, n, physical) // 代承的是实际伤害（会猎、气甲封顶后），不是原始值
+	if !kill {
 		return false
 	}
 	for _, x := range b.units[t.side] {
@@ -88,28 +93,42 @@ func (b *battle) leiying(src, t *unit, n int64, physical bool) bool {
 		}
 		x.leiying++
 		b.show(x, k.id, t)
-		b.hurt(src, x, k.id, n, physical)
-		// 触发的遁让照遁让本身的规则（dunrangTo：后阵从左到右）；代承伤害的雷震子不算在内（用户报：每次都和后阵的
-		// 雷震子互换），后阵只剩雷震子时才和它换
-		if to := b.dunrangTo(t.side, x); to != nil && t.alive() {
-			b.show(t, t.tals[famDunRang].id, t)
+		b.hurt(src, x, k.id, dmg, physical)
+		// 雷影触发的遁让：优先换入阵 / 遁让护法上来，雷震子只在没有其他存活后阵时才换上前阵。
+		if to := b.leiyingSwapTo(t.side, x); to != nil && t.alive() {
+			b.show(t, dr.id, t)
 			b.swap(t, to)
+			// 遁让激发：伤害来源流失 $x% 触发值的生命（与遁让本体结算一致，按封顶后的数值）。
+			if dr.tjOn() && src != nil && src != t && src.alive() {
+				b.loseHP(t, src, dr.id, int64(float64(dmg)*dr.tjX()/100))
+			}
 		}
 		return true
 	}
 	return false
 }
 
-// fatal：n 点伤害落到 t 身上（会猎加成、结界抵消之后）会不会致命。
-func (b *battle) fatal(t *unit, n int64, physical bool) bool {
+// fatal：n 点伤害落到 t 身上（会猎加成、气甲封顶之后）实际是多少、扣掉结界后会不会致命。
+func (b *battle) fatal(t *unit, n int64, physical bool) (dmg int64, kill bool) {
+	dmg = b.incoming(t, n, physical)
 	shield := t.mshield
+	if physical {
+		shield = t.shield
+	}
+	return dmg, dmg-min(dmg, shield) >= t.hp
+}
+
+// incoming：t 实际会承受的伤害值（会猎加成、气甲封顶之后；还没扣结界）。
+func (b *battle) incoming(t *unit, n int64, physical bool) int64 {
 	if physical {
 		if t.hurtUp > 0 {
 			n = n * int64(100+t.hurtUp) / 100
 		}
-		shield = t.shield
+		if k := t.tal(famQiJia); k != nil && n > t.maxHP*int64(k.param(1))/100 {
+			n = t.maxHP * int64(k.param(1)) / 100 // 气甲：物理伤害上限 b%
+		}
 	}
-	return n-min(n, shield) >= t.hp
+	return n
 }
 
 // beforeHurt 在 hurt 扣结界前调用（src != t、n > 0）：返回改后的伤害；stop 表示伤害已被代承。
@@ -128,7 +147,7 @@ func (b *battle) beforeHurt(src, t *unit, id int32, n int64, physical bool) (int
 		orig := n
 		n -= n * int64(k.param(0)) * left / 1000
 		if src != nil && src.side != t.side && b.chance(k.param(1)) {
-			if x := b.mostHurt(src.side); x != nil {
+			if x := b.easyDie(src.side); x != nil { // 敌方易死护法：前阵生命最少且不无敌（FAQ）
 				move := min(orig*int64(k.param(2))*left/1000, t.hp*int64(k.param(3))/100)
 				t.fpCut++
 				b.show(t, k.id, x)
@@ -213,17 +232,44 @@ func (b *battle) wanxian(side int) *talent {
 	return nil
 }
 
-// grant 让 u 获得神通 id（直到战斗结束；同族覆盖）。
-func (b *battle) grant(u *unit, id int32) {
+// grant 让 u 获得神通 id（直到战斗结束；同族覆盖），客户端在 u 身上飘出神通名（ADD_TEMP_TALENT）。
+func (b *battle) grant(u *unit, id int32) { b.grantFrom(u, u, id) }
+
+// grantFrom：from 给予 u 神通 id（神通名从 from 飞到 u）。
+func (b *battle) grantFrom(from, u *unit, id int32) {
+	if k := newTalent(id); k != nil {
+		u.tals[k.fam] = k
+		b.gainShow(from, u, id)
+	}
+}
+
+// grantQuiet 同 grant，不演出（变身后自带的神通：白骨魔、火之卵）。
+func (b *battle) grantQuiet(u *unit, id int32) {
 	if k := newTalent(id); k != nil {
 		u.tals[k.fam] = k
 	}
 }
 
-// grantRound 让 u 本回合获得神通 id，回合结束由 roundOver 还原。
+// gainShow 写 ADD_TEMP_TALENT（from, to, 神通号）：客户端 war/effect.lua addTempTalent 飘出神通名，
+// 连续几条只隔 0.4 秒。客户端按 TalentInfo 取名字，查不到会报错，所以只发表里有的神通。
+func (b *battle) gainShow(from, u *unit, id int32) {
+	if gamedata.Talents[id] == nil {
+		return
+	}
+	b.w.u8(CmdAddTempTalent)
+	b.w.u8(from.Pos)
+	b.w.u8(u.Pos)
+	b.w.u32(int64(id))
+}
+
+// grantRound 让 u 本回合获得神通 id，回合结束由 roundOver 还原。已有同族更高等级的神通时不覆盖（以命演天给的
+// 暴击3 不能把自身的暴击10 降成 3 级；水之形同理）。
 func (b *battle) grantRound(u *unit, id int32) {
 	k := newTalent(id)
 	if k == nil {
+		return
+	}
+	if cur := u.tals[k.fam]; cur != nil && cur.id >= k.id {
 		return
 	}
 	if u.roundTals == nil {
@@ -233,4 +279,5 @@ func (b *battle) grantRound(u *unit, id int32) {
 		u.roundTals[k.fam] = u.tals[k.fam]
 	}
 	u.tals[k.fam] = k
+	b.gainShow(u, u, id)
 }

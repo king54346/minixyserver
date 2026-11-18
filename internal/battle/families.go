@@ -5,6 +5,7 @@ package battle
 
 const (
 	famTingWei            family = 20001  // 霆威
+	famJinShenBoss        family = 21370  // 金身（首领：抵抗敌方持续效果，同时具有不动 / 不灭效果）
 	famBuMieBoss          family = 21390  // 不灭（首领：免疫秒杀、百分比扣血改按星级）
 	famBeiShui            family = 20011  // 背水
 	famShiQiang           family = 20021  // 恃强
@@ -196,4 +197,8 @@ const (
 	famTuYiShang          family = 130121 // 土易伤
 	famLeiYiShang         family = 130131 // 雷易伤
 	famDaoYiShang         family = 130141 // 道易伤
+	famXianShi            family = 21201  // 仙师（装备炼神套装效果）
+	famRenJie             family = 21221  // 人杰
+	famMoWang             family = 21241  // 魔王
+	famShouLing           family = 21261  // 兽灵
 )

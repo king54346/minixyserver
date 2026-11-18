@@ -5,6 +5,8 @@ package battle
 import (
 	"math/rand/v2"
 	"testing"
+
+	"turnrpg/internal/gamedata"
 )
 
 // TestTuomaoBench：脱帽退敌——敌方后阵只剩已阵亡（已被补位换下）的护法时也换（被换上的不要求存活）；后阵一张卡
@@ -127,11 +129,59 @@ func TestPelletCount(t *testing.T) {
 	res := Simulate(t1, t2, rand.New(rand.NewPCG(1, 1)))
 	cmds, _ := DecodeRecord(res.Record)
 	for _, c := range cmds {
-		if c.ID == CmdXiuluoCount && c.Actor == 6 && c.Magic > 0 {
+		if c.ID == CmdXiuluoCount && c.Actor == 6 {
+			// 一个先攻护法 × 每先攻 12 枚（2026-11-15 调整，原为 8）。
+			if c.Magic != 12 {
+				t.Fatalf("pellet count = %d, want 12", c.Magic)
+			}
 			return
 		}
 	}
 	t.Fatal("bench 小夫子 pellet count never sent")
+}
+
+// TestHuoPaoEntryFixedShots：敌方护法入阵固定发射 5 颗弹丸，不再随天将激发增加（2026-11-15 调整）。
+func TestHuoPaoEntryFixedShots(t *testing.T) {
+	for _, tj := range []int{0, 5} {
+		foe := newUnit(tjf(fu(101, 0, 10000, 1, levelID(famHuoPaoZhiShu, 4)), tj), 1)
+		foe.pellets = 10
+		out := newUnit(fu(1, 0, 1000, 1), 0)
+		in := newUnit(fu(6, 0, 1000, 1), 0)
+		b := faqBattle(out, in, foe)
+		b.swap(out, in)
+		n := 0
+		for _, c := range mustDecode(t, b.w.b) {
+			if c.ID == CmdActDo && c.Magic == int64(foe.tals[famHuoPaoZhiShu].id) {
+				n++
+			}
+		}
+		if n != huoPaoEntryShots {
+			t.Fatalf("tj=%d entry shots=%d, want %d", tj, n, huoPaoEntryShots)
+		}
+	}
+}
+
+// TestHuoPaoTJRefill：火炮之术天匠（激发）每 3 回合把弹丸回满；没有激发时只按回合减半（2026-11-15 调整）。
+func TestHuoPaoTJRefill(t *testing.T) {
+	for _, tj := range []int{0, 5} {
+		u := newUnit(tjf(fu(6, 100, 1000, 1, levelID(famHuoPaoZhiShu, 4)), tj), 0)
+		ally := newUnit(fu(1, 0, 1000, 1, levelID(famXianGong, 1)), 0)
+		foe := newUnit(fu(101, 0, 1000, 1), 1)
+		b := faqBattle(ally, u, foe)
+		b.initPellets(u)
+		if u.pellets != 12 || u.pellFull != 12 {
+			t.Fatalf("tj=%d 开场 pellets=%d full=%d", tj, u.pellets, u.pellFull)
+		}
+		for i := 0; i < huoPaoTJResetRounds; i++ {
+			b.roundOver()
+		}
+		if tj > 0 && u.pellets != 12 {
+			t.Fatalf("带激发 3 回合后应回满 12，实际 %d", u.pellets)
+		}
+		if tj == 0 && u.pellets == 12 {
+			t.Fatalf("无激发不应回满，实际 %d", u.pellets)
+		}
+	}
 }
 
 // setParam 改单个神通实例的参数（先复制整条 TalentInfo：talent 嵌的是全局神通表的指针，直接改会污染其他测试；
@@ -163,7 +213,7 @@ func TestBajiaoQuzhu(t *testing.T) {
 	t.Fatal("芭蕉扇激发从未驱逐")
 }
 
-// TestHuisaoGuardCenter：被守卫代挨时，挥扫打原攻击目标的左右，不是守卫的左右。
+// TestHuisaoGuardCenter：被守卫代挨时，挥扫打守卫的左右。
 func TestHuisaoGuardCenter(t *testing.T) {
 	u := newUnit(fu(1, 1000, 100000, 1, levelID(famHuiSao, 10)), 0)
 	x := newUnit(fuh(101, 10, 100, 10000, 1), 1)                     // 原目标（濒危，触发守卫）
@@ -174,9 +224,9 @@ func TestHuisaoGuardCenter(t *testing.T) {
 	b := faqBattle(u, x, nx, gl, g)
 	b.attackAction(u, x, 100, atkMain)
 	if g.hp == 100000 {
-		t.Skip("守卫没触发")
+		t.Fatal("守卫没触发")
 	}
-	if nx.hp == 100000 || gl.hp != 100000 {
+	if nx.hp != 100000 || gl.hp != 99500 {
 		t.Fatalf("原目标右边 %d，守卫左边 %d", nx.hp, gl.hp)
 	}
 }
@@ -207,17 +257,31 @@ func TestShenliStacks(t *testing.T) {
 	}
 }
 
-// TestShenweiQuzhu：神威入阵驱逐对位，敌方后阵只有已阵亡的护法时也能换上来（规则同驱逐）。
+// TestShenweiQuzhu：神威入阵先对对位及左右输出，再驱逐对位；对位无活口时不施放；敌方后阵只有已阵亡的护法时也能换上来。
 func TestShenweiQuzhu(t *testing.T) {
-	u := newUnit(fu(1, 100, 100000, 1, levelID(famShenWei, 4)), 0)
-	o := newUnit(fu(101, 10, 100000, 1), 1)
+	u := newUnit(fu(2, 100, 100000, 1, levelID(famShenWei, 4)), 0)
+	o1 := newUnit(fu(101, 10, 100000, 1), 1)
+	o2 := newUnit(fu(102, 10, 100000, 1), 1) // 对位
+	o3 := newUnit(fu(103, 10, 100000, 1), 1)
+	o5 := newUnit(fu(105, 10, 100000, 1), 1) // 非相邻，不应受神威伤害
 	d := newUnit(fu(106, 10, 1000, 1), 1)
 	d.hp = 0
-	b := faqBattle(u, o, d)
+	b := faqBattle(u, o1, o2, o3, o5, d)
 	setParam(u.tals[famShenWei], 0, 100)
 	b.enter(u)
-	if o.front() || d.slot() != 1 {
-		t.Fatalf("o front %v, dead slot %d", o.front(), d.slot())
+	// 先对对位及左右（101, 102, 103）造成伤害，然后再把对位 102 驱逐到后阵（105 不受伤）
+	if o1.hp >= o1.maxHP || o2.hp >= o2.maxHP || o3.hp >= o3.maxHP || o5.hp != o5.maxHP {
+		t.Fatalf("shenwei facing3 hurt: o1=%d o2=%d o3=%d o5=%d", o1.hp, o2.hp, o3.hp, o5.hp)
+	}
+	if o2.front() || d.slot() != 2 {
+		t.Fatalf("o2 front %v, dead slot %d", o2.front(), d.slot())
+	}
+
+	// 对位为空仍伤害相邻存活目标，非相邻目标不受影响。
+	hp1, hp3, hp5 := o1.hp, o3.hp, o5.hp
+	b.enter(u)
+	if o1.hp >= hp1 || o3.hp >= hp3 || o5.hp != hp5 {
+		t.Fatalf("shenwei fired without living opposite: o1=%d o3=%d o5=%d", o1.hp, o3.hp, o5.hp)
 	}
 }
 
@@ -338,8 +402,8 @@ func TestTuomaoNoChase(t *testing.T) {
 	}
 }
 
-// TestTalangStiffAfterHit：踏浪先加僵化再结算伤害（用户确认 21571–21601 一组）——这一下受击方的仙衣、反击就已失效。
-func TestTalangStiffFirst(t *testing.T) {
+// 踏浪封住目标时，这一击也不会触发目标的减伤或反击。
+func TestTalangStiffBeforeHit(t *testing.T) {
 	u := newUnit(fu(1, 100, 1000000, 1, levelID(famTaLang, 10)), 0)
 	x := newUnit(fu(101, 100, 1000000, 1, levelID(famFanJi, 10), levelID(famXianYi, 10)), 1)
 	setParam(u.tals[famTaLang], 0, 100)
@@ -349,6 +413,95 @@ func TestTalangStiffFirst(t *testing.T) {
 	b.attackAction(u, x, 100, atkMain)
 	if x.has(stStiff) == nil || u.hp != u.maxHP || x.maxHP-x.hp != 150 {
 		t.Fatalf("stiff %v, counter dmg %d, taken %d", x.has(stStiff) != nil, u.maxHP-u.hp, x.maxHP-x.hp)
+	}
+	cmds, err := DecodeRecord(b.w.b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, cmd := range cmds {
+		if cmd.ID == CmdActDo && cmd.Magic == attackNormal && cmd.Actor == u.Pos {
+			if !hasCmd(cmds[:i], CmdBuff, talangIceBuff, 101, -1) {
+				t.Fatal("踏浪僵化应在普攻出手前写入战报")
+			}
+			return
+		}
+	}
+	t.Fatal("战报缺少普攻出手")
+}
+
+func TestTalangRunzeAndIceResistance(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fenshui float64
+		buqin   float64
+		shield  int64
+		hp      int64
+		frozen  bool
+	}{
+		{"survives", 0, 0, 0, 1000, true},
+		{"fenshui", 100, 0, 0, 1000, false},
+		{"buqin", 0, 100, 0, 1000, false},
+		{"shield_breaks", 0, 0, 1, 1000, true},
+		{"dies", 0, 0, 0, 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newUnit(fu(1, 100, 1000, 1, levelID(famTaLang, 10)), 0)
+			x := newUnit(fu(101, 10, 1000, 1, levelID(famRunZe, 1), levelID(famFenShui, 10), levelID(famBuQin, 10), levelID(famFanJi, 10)), 1)
+			x.hp, x.mshield = tc.hp, tc.shield
+			setParam(u.tals[famTaLang], 0, 100)
+			setParam(x.tals[famFenShui], 0, tc.fenshui)
+			setParam(x.tals[famBuQin], 0, tc.buqin)
+			setParam(x.tals[famFanJi], 0, 100)
+			b := faqBattle(u, x)
+			b.attackAction(u, x, 100, atkMain)
+			cmds, err := DecodeRecord(b.w.b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			canReact := x.alive() && !tc.frozen
+			if got := hasCmd(cmds, CmdActDo, int64(famRunZe), 101, -1); got != canReact {
+				t.Fatalf("润泽触发=%v, 预期=%v", got, canReact)
+			}
+			if got := hasCmd(cmds, CmdActDo, int64(x.tals[famFanJi].id), 101, -1); got != canReact {
+				t.Fatalf("反击触发=%v, 预期=%v", got, canReact)
+			}
+			if got := x.has(stStiff) != nil; got != tc.frozen {
+				t.Fatalf("冰封=%v, 预期=%v", got, tc.frozen)
+			}
+			if tc.fenshui == 100 && u.hp == u.maxHP {
+				t.Fatal("分水挡住冰封后没有结算反伤")
+			}
+		})
+	}
+}
+
+func TestXixueMaxHPCutRequiresDamage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		immune bool
+		shield int64
+		hp     int64
+		maxHP  int64
+	}{
+		{"immune", true, 0, 100, 1000},
+		{"fully_absorbed", false, 100, 100, 1000},
+		{"partially_absorbed", false, 99, 200, 960},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newUnit(fu(1, 100, 1000, 1, levelID(famXiXue, 10)), 0)
+			x := newUnit(fu(101, 10, 1000, 1), 1)
+			u.hp = 100
+			u.tals[famXiXue].tj = 5
+			x.shield = tc.shield
+			b := faqBattle(u, x)
+			if tc.immune {
+				b.setStatus(x, stImmune, 0, 1, false, 5321, slotBuff)
+			}
+			b.attackAction(u, x, 100, atkMain)
+			if u.hp != tc.hp || x.maxHP != tc.maxHP {
+				t.Fatalf("回血后=%d，目标生命上限=%d，预期=%d/%d", u.hp, x.maxHP, tc.hp, tc.maxHP)
+			}
+		})
 	}
 }
 
@@ -384,7 +537,7 @@ func TestBatch1022b(t *testing.T) {
 	b2 := faqBattle(v, x, y)
 	v.swords, v.swordKind, v.swordSet = 1, 3, true
 	b2.attackAction(v, x, 100, atkMain)
-	if x.alive() || y.hp != y.maxHP-v.baseAtt/2 || v.swords != 0 {
+	if x.alive() || y.hp != y.maxHP-v.baseAtt/2 || v.swords != 1 {
 		t.Fatalf("sword after kill: y %d/%d swords %d", y.hp, y.maxHP, v.swords)
 	}
 }
@@ -401,18 +554,42 @@ func TestBumiequDevoured(t *testing.T) {
 	}
 }
 
-// TestBatch1023：自带 + 套装两个突袭各自判定；属性攻击（踏浪）无法闪避，僵化先挂、对方先攻发动不了；
+// TestBatch1023：自带 + 套装两个突袭各自判定；踏浪封住闪避和先攻；
+func TestSwordStrikeStopsWhenDeathSkillKillsOwner(t *testing.T) {
+	owner := newUnit(fu(1, 1000, 100, 1), 0)
+	dying := newUnit(fu(101, 1000, 100, 1, 21794), 1) // 诸佛消散
+	next := newUnit(fu(103, 100, 10000, 1), 1)
+	b := faqBattle(owner, dying, next)
+	owner.swords, owner.swordKind, owner.swordSet = 3, 0, true
+	b.fireSwords(owner, dying)
+	if owner.alive() || owner.swords != 0 || next.hp != next.maxHP {
+		t.Fatalf("owner alive=%t, swords=%d, next hp=%d", owner.alive(), owner.swords, next.hp)
+	}
+	count := 0
+	for _, cmd := range mustDecode(t, b.w.b) {
+		if cmd.ID == CmdSwordAttack {
+			count++
+			if cmd.Targets[0] != [2]int64{101, 1} {
+				t.Fatalf("unexpected sword animation: %+v", cmd)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected one sword animation, got %d", count)
+	}
+}
+
 // 仙剑打死目标后剩下的改打对位；噬心龙咒的龙回后阵照样重置，再入阵攻击恢复到本场最高值。
 func TestBatch1023(t *testing.T) {
-	u := newUnit(fu(1, 1000, 100000, 1, levelID(famTuXi, 10), levelID(famTuXi, 5)), 0)
+	u := newUnit(fu(1, 9462, 100000, 1, levelID(famTuXi, 10), levelID(famTuXi, 5)), 0)
 	x := newUnit(fu(101, 10, 1000000, 1), 1)
 	b := faqBattle(u, x)
 	for _, k := range append([]*talent{u.tals[famTuXi]}, u.dupTals[famTuXi]...) {
 		setParam(k, 0, 100)
 	}
 	b.tuxi(u)
-	if u.tempAtt != 500+750 {
-		t.Fatalf("double tuxi temp %d", u.tempAtt)
+	if u.att != 18924 || u.tempAtt != 9462 {
+		t.Fatalf("double tuxi: attack=%d temporary=%d", u.att, u.tempAtt)
 	}
 
 	v := newUnit(fu(1, 100, 100000, 1, levelID(famTaLang, 10)), 0)
@@ -519,5 +696,349 @@ func TestYitaiDamageUp(t *testing.T) {
 	got := b.attackAction(u, x, 100, atkMain)
 	if want := int64(1000 * (100 + u.tals[famYiTai].param(0)) / 100); got != want || u.att != 1000 {
 		t.Fatalf("dmg %d want %d, att %d", got, want, u.att)
+	}
+}
+
+// TestMagicAudit1027：法术校对——救援时原目标受固定 1 点（不吃阵法加伤）；驱散清掉增益；附带状态几率按等级 − 1。
+func TestMagicAudit1027(t *testing.T) {
+	f := fu(3, 3000, 100000, 1)
+	f.Grade = 100
+	u := newUnit(f, 0)
+	x := newUnit(fu(101, 100, 200000, 1, levelID(famJiuYuan, 10)), 1)
+	tt := newUnit(fuh(103, 100, 2000, 25000, 1), 1)
+	b := faqBattle(u, x, tt)
+	n := len(b.w.b)
+	b.cast(u, &castable{id: 12501, lv: 10, left: 2, MagicInfo: gamedata.Magics[12501]})
+	cmds, _ := DecodeRecord(append(append([]byte{CmdWarStart, 0}, b.w.b[n:]...), CmdWarEnd, 1))
+	var toT []int64
+	for _, c := range cmds {
+		if c.ID == CmdSubHP && c.Targets[0][0] == 103 {
+			toT = append(toT, c.Targets[0][1])
+		}
+	}
+	if len(toT) != 1 || toT[0] != 1 || b.fixedHit {
+		t.Fatalf("rescued target hits %v fixedHit left %v", toT, b.fixedHit)
+	}
+
+	y := newUnit(fu(101, 1000, 100000, 1), 1)
+	b2 := faqBattle(newUnit(fu(1, 100, 1000, 1), 0), y)
+	b2.setStatus(y, stImmune, 0, 1, false, 5321, slotBuff)
+	b2.shenli(y, 5205, 15)
+	b2.spEffect(b2.units[0][0], y, 15354, 12, 100)
+	if y.has(stImmune) != nil || y.att != 1000 {
+		t.Fatalf("驱散: immune %v att %d", y.has(stImmune) != nil, y.att)
+	}
+}
+
+// TestMolongOrder：魔龙（应龙）回合开始吸取 a%×当前攻击 的结界：敌方法术 → 敌方物理 → 我方法术 → 我方物理，额度用完为止。
+func TestMolongOrder(t *testing.T) {
+	u := newUnit(fu(1, 1000, 100000, 1, levelID(famMoLong, 4)), 0) // 140% × 1000 = 1400
+	a := newUnit(fu(2, 10, 100000, 1), 0)
+	e1 := newUnit(fu(101, 10, 100000, 1), 1)
+	e2 := newUnit(fu(102, 10, 100000, 1), 1)
+	b := faqBattle(u, a, e1, e2)
+	e1.mshield, e1.shield, e2.mshield, a.mshield, a.shield = 500, 300, 200, 1000, 1000
+	b.roundStart(u)
+	if e1.mshield != 0 || e2.mshield != 0 || e1.shield != 0 || a.mshield != 600 || a.shield != 1000 || u.mshield != 1100 || u.shield != 300 {
+		t.Fatalf("e1 %d/%d e2 %d ally %d/%d self %d/%d", e1.mshield, e1.shield, e2.mshield, a.mshield, a.shield, u.mshield, u.shield)
+	}
+}
+
+// TestAudit1：神通校对第 1 批——人圣按盲目 b（人圣10 = 盲目5）；突袭不触发反击 / 护体；驭兵按剑数保留加值；
+// 兽王死亡时有法术结界触发神佑10。
+func TestAudit1(t *testing.T) {
+	u := newUnit(raced(fu(1, 100, 100000, 1, levelID(famRenSheng, 10)), raceHuman), 0)
+	x := newUnit(fu(101, 100, 100000, 1), 1)
+	setParam(u.tals[famRenSheng], 0, 100)
+	b := faqBattle(u, x)
+	b.onRenSheng(u, u.tals[famRenSheng])
+	if s := x.has(stBlind); s == nil || s.val != 50 {
+		t.Fatalf("人圣10 盲目 %+v", s)
+	}
+
+	v := newUnit(fu(1, 1000, 100000, 1, levelID(famTuXi, 10)), 0)
+	y := newUnit(fu(101, 100, 100000, 1, levelID(famFanJi, 10), levelID(famHuTi, 10)), 1)
+	setParam(v.tals[famTuXi], 0, 100)
+	setParam(y.tals[famFanJi], 0, 100)
+	setParam(y.tals[famHuTi], 0, 100)
+	b2 := faqBattle(v, y)
+	b2.attackAction(v, y, 100, atkMain)
+	if v.hp != v.maxHP {
+		t.Fatalf("突袭后仍被反击 / 护体：v 掉血 %d", v.maxHP-v.hp)
+	}
+
+	w := newUnit(fu(1, 1000, 100000, 1, levelID(famYuBing, 10)), 0)
+	z := newUnit(fu(101, 10, 10000000, 1), 1)
+	setParam(w.tals[famYuBing], 0, 100)
+	w.swords, w.swordKind, w.swordSet = 2, 3, true
+	b3 := faqBattle(w, z)
+	b3.attackAction(w, z, 100, atkMain)
+	if want := int64(1000 + 500*40/100); w.att != want { // 加 50%（500），2 把剑保留 40%
+		t.Fatalf("驭兵保留：att %d want %d", w.att, want)
+	}
+
+	k := newUnit(fu(1, 100, 1000, 1, levelID(famShouWang, 10)), 0)
+	o := newUnit(fu(101, 100000, 100000, 1), 1)
+	b4 := faqBattle(k, o)
+	b4.rng = rand.New(rand.NewPCG(3, 3))
+	revived := false
+	for i := 0; i < 20 && !revived; i++ {
+		k.hp, k.mshield, k.shenyouAt, b4.round = 1000, 10, 0, 1
+		b4.hurt(o, k, 1, 100000, true) // 物理伤害：法术结界不抵消，阵亡时还在
+		revived = k.alive()
+	}
+	if !revived {
+		t.Fatal("兽王带法术结界阵亡 20 次一次都没触发神佑10")
+	}
+}
+
+// TestRaceSum：魔煞等「每名同族护法 b%×其攻击力」按每名同族各自的数值相加（用户确认）。
+func TestRaceSum(t *testing.T) {
+	u := newUnit(raced(fu(1, 3000, 100000, 1, levelID(famMoSha, 10)), raceGhost), 0)
+	a := newUnit(raced(fu(2, 2000, 100000, 1), raceGhost), 0)
+	c := newUnit(raced(fu(6, 1000, 100000, 1), raceGhost), 0) // 后阵也算
+	x := newUnit(fu(101, 10, 10000000, 1), 1)
+	setParam(u.tals[famMoSha], 0, 100)
+	b := faqBattle(u, a, c, x)
+	b.beforeAttack(u, x)
+	if want := int64(6000 * u.tals[famMoSha].param(1) / 100); u.tempAtt != want {
+		t.Fatalf("魔煞加攻 %d want %d", u.tempAtt, want)
+	}
+}
+
+// TestAudit2：第 2 批——削弱同时降先攻；化血被闪避不触发；弱化降的攻击不超过攻击方当前攻击。
+func TestAudit2(t *testing.T) {
+	u := newUnit(fu(1, 1000, 100000, 5, levelID(famXueRuo, 10)), 0)
+	x := newUnit(fu(101, 1000, 100000, 10), 1)
+	setParam(u.tals[famXueRuo], 1, 100)
+	b := faqBattle(u, x)
+	b.attackAction(u, x, 100, atkMain)
+	if x.has(stWeak) == nil || x.has(stSlow) == nil || x.speed() != max(10-u.tals[famXueRuo].param(0), 1) {
+		t.Fatalf("削弱：weak %v slow %v speed %d", x.has(stWeak) != nil, x.has(stSlow) != nil, x.speed())
+	}
+
+	v := newUnit(fu(1, 1000, 100000, 1, levelID(famHuaXue, 10)), 0)
+	y := newUnit(fu(101, 10, 100000, 1, levelID(famShanBi, 10)), 1)
+	setParam(v.tals[famHuaXue], 0, 100)
+	setParam(y.tals[famShanBi], 0, 100)
+	b2 := faqBattle(v, y)
+	b2.attackAction(v, y, 100, atkMain)
+	if y.hp != y.maxHP {
+		t.Fatalf("化血被闪避仍触发：掉血 %d", y.maxHP-y.hp)
+	}
+
+	w := newUnit(fu(1, 100, 100000, 1, levelID(famRuoHua, 10)), 0)
+	z := newUnit(fu(101, 100000, 10000000, 1), 1)
+	setParam(w.tals[famRuoHua], 0, 100)
+	b3 := faqBattle(w, z)
+	b3.attackAction(w, z, 100, atkMain)
+	if z.att < 100000-100 {
+		t.Fatalf("弱化降攻超过攻击方攻击：%d", 100000-z.att)
+	}
+}
+
+// TestAudit3：第 3 批——碧血被闪避也触发；诈死激发：生效后受到的伤害转为物理结界。
+func TestAudit3(t *testing.T) {
+	u := newUnit(fu(1, 1000, 100000, 1), 0)
+	x := newUnit(fu(101, 10, 10000, 1, levelID(famShanBi, 10), levelID(famBiXue, 10)), 1)
+	y := newUnit(fuh(102, 10, 100, 10000, 1), 1)
+	setParam(x.tals[famShanBi], 0, 100)
+	setParam(x.tals[famBiXue], 0, 100)
+	b := faqBattle(u, x, y)
+	b.attackAction(u, x, 100, atkMain)
+	if y.hp == 100 {
+		t.Fatal("碧血：被闪避也应触发")
+	}
+
+	z := newUnit(tjf(fu(101, 10, 1000, 1, levelID(famZhaSi, 10)), 5), 1)
+	b2 := faqBattle(u, z)
+	z.setStatusForTest(stZhasi)
+	b2.hurt(u, z, 1, 500, true)
+	if z.shield == 0 || z.hp != 1000 {
+		t.Fatalf("诈死激发：shield %d hp %d", z.shield, z.hp)
+	}
+}
+
+func (u *unit) setStatusForTest(k stKey) {
+	if u.status == nil {
+		u.status = map[stKey]*status{}
+	}
+	u.status[k] = &status{left: 1}
+}
+
+// TestGuaXiangShield：卦象给全体友方的物理结界是 $q = b% × 释放者生命上限（客户端 talent_mgr 的 $q）。
+func TestGuaXiangShield(t *testing.T) {
+	u := newUnit(fu(1, 100, 20000, 1, levelID(famGuaXiang, 4)), 0)
+	a := newUnit(fu(2, 100, 5000, 1), 0)
+	b := faqBattle(u, a, newUnit(fu(101, 10, 1000, 1), 1))
+	k := u.tals[famGuaXiang]
+	u.charge = chargeNeed(k)
+	b.releaseCharge(u, k)
+	if want := int64(20000 * k.param(1) / 100); a.shield != min(want, 2*a.maxHP) && a.shield != want {
+		t.Fatalf("卦象结界 %d want %d", a.shield, want)
+	}
+}
+
+// TestAudit5：第 5 批（死亡）——芭蕉扇扣结界按 $p = a% × 自身攻击；易命激发是「失去生命」（不被结界抵消）。
+func TestAudit5(t *testing.T) {
+	u := newUnit(fu(1, 100, 100, 1, levelID(famBaJiaoShan, 4)), 0)
+	x := newUnit(fu(101, 10, 100000, 1), 1)
+	b := faqBattle(u, x)
+	x.shield, x.mshield = 50000, 50000
+	b.deathMore(u)
+	if x.shield != 50000-120 || x.mshield != 50000-120 {
+		t.Fatalf("芭蕉扇扣结界 %d / %d，应各扣 120（攻击 100 × 120%%）", x.shield, x.mshield)
+	}
+
+	y := newUnit(tjf(fu(1, 100, 1000, 1, levelID(famYiMing, 4)), 5), 0)
+	o := newUnit(fu(101, 10, 10000, 1), 1)
+	b2 := faqBattle(y, o)
+	o.shield = 100000
+	y.hp = 0
+	b2.onYiMing(y, y.tals[famYiMing])
+	if o.hp != 10000-300 || o.shield != 100000 {
+		t.Fatalf("易命激发：hp %d shield %d", o.hp, o.shield)
+	}
+
+	// 遗志4：+30%，受遗志的护法自己是魔族再 +10%
+	j := newUnit(fu(1, 10, 10, 1, levelID(famJingWeiTianHai, 4)), 0)
+	g := newUnit(fu(2, 100, 1000, 1), 0)
+	g.Race = raceGhost
+	h := newUnit(fu(3, 100, 1000, 1), 0)
+	b3 := faqBattle(j, g, h, newUnit(fu(101, 10, 1000, 1), 1))
+	j.hp = 0
+	b3.deathMore(j)
+	if g.att != 140 || h.att != 130 {
+		t.Fatalf("遗志：魔族 %d 其他 %d", g.att, h.att)
+	}
+}
+
+// TestZhenYanOpening：阵眼开场就在 3 号位也提升攻击、上限（不只入阵）。
+func TestZhenYanOpening(t *testing.T) {
+	u := newUnit(fu(3, 100, 1000, 1, levelID(famZhenYan, 10)), 0)
+	b := faqBattle(u, newUnit(fu(101, 10, 1000, 1), 1))
+	b.battleStart()
+	if p := int64(u.tals[famZhenYan].param(0)); u.att != 100+p || u.maxHP != 1000+10*p {
+		t.Fatalf("阵眼开场 att %d maxHP %d", u.att, u.maxHP)
+	}
+}
+
+// TestAudit7：第 7 批（回合开始 / 结束）。
+func TestAudit7(t *testing.T) {
+	// 命数由我：单次伤害不超过自身上限 300%
+	u := newUnit(fu(1, 100, 100, 1, levelID(famMingShuYouWo, 4)), 0)
+	d := newUnit(fu(2, 10, 100, 1), 0)
+	d.hp = 0
+	o := newUnit(fu(101, 100000, 10000000, 1), 1)
+	b := faqBattle(u, d, o)
+	b.onMingShuYouWo(u, u.tals[famMingShuYouWo])
+	if lost := int64(10000000) - o.hp; lost > 300 || lost == 0 {
+		t.Fatalf("命数由我伤害 %d，应封顶 300", lost)
+	}
+
+	// 进化：对位比自己弱、但相邻比自己强时也会触发
+	j := newUnit(fu(1, 100, 1000, 1, levelID(famJinHua, 10)), 0)
+	setParam(j.tals[famJinHua], 0, 100)
+	b2 := faqBattle(j, newUnit(fu(101, 10, 10, 1), 1), newUnit(fu(102, 1000, 10000, 1), 1))
+	b2.onJinHua(j, j.tals[famJinHua])
+	if j.att == 100 || j.maxHP == 1000 {
+		t.Fatalf("进化：att %d maxHP %d", j.att, j.maxHP)
+	}
+
+	// 水之形：只吸攻击最高的那一个
+	s := newUnit(fu(2, 100, 1000, 1, levelID(famShuiZhiXing, 4)), 0)
+	x1 := newUnit(fu(101, 200, 1000, 1), 1)
+	x2 := newUnit(fu(102, 300, 1000, 1), 1)
+	b3 := faqBattle(s, x1, x2)
+	b3.onShuiZhiXing(s, s.tals[famShuiZhiXing])
+	if x1.att != 200 || x2.att == 300 {
+		t.Fatalf("水之形：x1 %d x2 %d", x1.att, x2.att)
+	}
+
+	// 钉头七箭：不触发坚韧
+	c := newUnit(fu(1, 1000, 1000, 1, levelID(famDingTouQiJian, 4)), 0)
+	g := newUnit(fu(101, 100, 1000000, 1, levelID(famJianRen, 10)), 1)
+	setParam(g.tals[famJianRen], 0, 100)
+	b4 := faqBattle(c, g)
+	b4.onDingTouQiJian(c, c.tals[famDingTouQiJian])
+	if g.att != 100 {
+		t.Fatalf("钉头七箭触发了坚韧：att %d", g.att)
+	}
+}
+
+// TestShiHouShielded：狮吼——吸完结界后对方仍有法术结界，混乱被免疫，但照样吸取生命上限（FAQ）。
+func TestShiHouShielded(t *testing.T) {
+	w := newUnit(fu(101, 10, 1000, 1, levelID(famShiHou, 4)), 1)
+	setParam(w.tals[famShiHou], 0, 100)
+	u := newUnit(fu(1, 100, 10000, 1), 0)
+	x := newUnit(fu(2, 100, 10000, 1), 0)
+	x.mshield = 100000
+	b := faqBattle(u, x, w)
+	b.onHit(u, w, 1, atkMain)
+	if x.maxHP == 10000 || x.has(stConfuse) != nil {
+		t.Fatalf("狮吼：maxHP %d confuse %v", x.maxHP, x.has(stConfuse) != nil)
+	}
+}
+
+// TestShiHouAfterConfuse：狮吼——混乱挂上时不吸，混乱结束（一次行动后）才吸取生命上限（用户确认）。
+func TestShiHouAfterConfuse(t *testing.T) {
+	w := newUnit(fu(101, 10, 1000, 1, levelID(famShiHou, 4)), 1)
+	setParam(w.tals[famShiHou], 0, 100)
+	u := newUnit(fu(1, 100, 10000, 1), 0)
+	x := newUnit(fu(2, 100, 10000, 1), 0)
+	b := faqBattle(u, x, w)
+	b.onHit(u, w, 1, atkMain)
+	if x.has(stConfuse) == nil || x.maxHP != 10000 {
+		t.Fatalf("混乱中不应吸：confuse %v maxHP %d", x.has(stConfuse) != nil, x.maxHP)
+	}
+	b.tickStatus(x, true)
+	if x.has(stConfuse) != nil || x.maxHP == 10000 || w.maxHP == 1000 {
+		t.Fatalf("混乱结束后应吸：x %d w %d", x.maxHP, w.maxHP)
+	}
+}
+
+// TestKaoLaoSelfAdjacent：犒劳「友方三体」= 自己及左右。
+func TestKaoLaoSelfAdjacent(t *testing.T) {
+	u := newUnit(fu(2, 10, 1000, 1, levelID(famKaoLao, 1)), 0)
+	l := newUnit(fu(1, 10, 1000, 1), 0)
+	r := newUnit(fu(3, 10, 1000, 1), 0)
+	far := newUnit(fu(5, 10, 1000, 1), 0)
+	b := faqBattle(u, l, r, far, newUnit(fu(101, 10, 1000, 1), 1))
+	b.enter(u)
+	if u.maxHP == 1000 || l.maxHP == 1000 || r.maxHP == 1000 || far.maxHP != 1000 {
+		t.Fatalf("犒劳：%d %d %d %d", u.maxHP, l.maxHP, r.maxHP, far.maxHP)
+	}
+}
+
+// TestBuQinBlocksQuzhu：不侵不会被驱逐，也不会被霆威一击必杀。
+func TestBuQinBlocksQuzhu(t *testing.T) {
+	u := newUnit(fu(1, 100, 100000, 1, levelID(famQuZhu, 10), levelID(famTingWei, 10)), 0)
+	setParam(u.tals[famQuZhu], 0, 100)
+	setParam(u.tals[famTingWei], 0, 100)
+	setParam(u.tals[famTingWei], 1, 100)
+	x := newUnit(fuh(101, 10, 5000, 1000000, 1, levelID(famBuQin, 1)), 1)
+	bn := newUnit(fu(106, 10, 1000, 1), 1)
+	b := faqBattle(u, x, bn)
+	b.attackAction(u, x, 100, atkMain)
+	if !x.alive() || !x.front() {
+		t.Fatalf("不侵：alive %v front %v", x.alive(), x.front())
+	}
+}
+
+// TestGrantRoundKeepsHigher：以命演天激发给的暴击3 / 分水3 不覆盖队友自身更高等级的同族神通；没有的照常获得。
+func TestGrantRoundKeepsHigher(t *testing.T) {
+	u := newUnit(fu(1, 100, 1000, 1, levelID(famBaoJi, 10)), 0)
+	x := newUnit(fu(2, 100, 1000, 1), 0)
+	b := faqBattle(u, x, newUnit(fu(101, 10, 1000, 1), 1))
+	for _, y := range []*unit{u, x} {
+		b.grantRound(y, levelID(famBaoJi, 3))
+		b.grantRound(y, levelID(famFenShui, 3))
+	}
+	if u.tals[famBaoJi].id != levelID(famBaoJi, 10) || x.tals[famBaoJi] == nil || x.tals[famFenShui] == nil {
+		t.Fatalf("u 暴击 %d, x 暴击 %v 分水 %v", u.tals[famBaoJi].id, x.tals[famBaoJi], x.tals[famFenShui])
+	}
+	b.roundOver()
+	if u.tals[famBaoJi].id != levelID(famBaoJi, 10) || x.tals[famBaoJi] != nil || x.tals[famFenShui] != nil {
+		t.Fatal("回合结束后应还原")
 	}
 }

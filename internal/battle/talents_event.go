@@ -11,7 +11,7 @@ func init() {
 
 // deathFamilies / enterFamilies 是「死亡技」「入阵技」（铸剑、天魔觉醒、飞仙、审死等判定用）。
 var (
-	deathFamilies = []family{famShenYou, famHunShou, famYiXiang, famWangYuZhou, famLuoWang, famJieLiZhou, famGuMao, famTongGuiJue, famYiMing, famKuangNuYan, famQunYaoJue,
+	deathFamilies = []family{famHunShou, famYiXiang, famWangYuZhou, famLuoWang, famJieLiZhou, famGuMao, famTongGuiJue, famYiMing, famKuangNuYan, famQunYaoJue,
 		famGuiYuan, famHuanHun, famBuMieQu, famGuiXuZhen, famBaJiaoShan, famShengSiBie, famQingShang, famZhuFuXiaoSan, famJingWeiTianHai, famBuMieFaShen, famHuoZhiHun}
 	enterFamilies = []family{famXiuLin, famKaoLao, famKuangLei, famXunDian, famLangYong, famQianKunXiu, famShenWei, famPanTaoYan, famGanLu, famDaoZhiShi, famGuangYinSui,
 		famShuiZhiYuan, famZhuXianZhen, famYuanHu, famLongYue, famPoChuJinGu, famZiQingJian, famTianGangJianQi, famShiXinLongZhou}
@@ -59,8 +59,7 @@ func (b *battle) firstSkill(x *unit, kind int) {
 				}
 				b.changeAtt(y, k.id, c.skillBoost(k, y.att*int64(k.param(0))/100))
 				grow := c.skillBoost(k, y.maxHP*int64(k.param(0))/100)
-				b.changeMaxHP(y, k.id, grow)
-				b.heal(y, k.id, grow)
+				b.growAndHeal(y, k.id, grow)
 			}
 		}
 		if td != nil {
@@ -73,8 +72,7 @@ func (b *battle) firstSkill(x *unit, kind int) {
 				b.show(c, k.id, c)
 				b.changeAtt(c, k.id, int64(float64(c.att)*k.tjX()/100))
 				g := int64(float64(c.maxHP) * k.tjX() / 100)
-				b.changeMaxHP(c, k.id, g)
-				b.heal(c, k.id, g)
+				b.growAndHeal(c, k.id, g)
 			}
 		}
 	}
@@ -104,11 +102,12 @@ func (b *battle) deathSkillEvent(x *unit) {
 			if k := c.tal(famTianMoJueXing); k != nil && c.alive() && !c.gone && c.tianmo < 7 {
 				c.tianmo++
 				b.show(c, k.id, c)
+				b.xiuluoCount(c, c.tianmo) // 天女魃头像上的计数（客户端与阿修罗共用 XIULUO_COUNT）
 				b.changeAtt(c, k.id, c.baseAtt*int64(10+k.param(0))/100+int64(float64(c.baseAtt)*k.tjX()/100))
 			}
 		}
 		for _, c := range b.units[side] {
-			if c.tals[famXiuLuoYinShen] != nil && !c.eaten { // 阿修罗在后阵 / 已阵亡也累积修罗点（图鉴 FAQ）
+			if c.tals[famXiuLuoYinShen] != nil { // Death/sealing does not prevent accumulating points.
 				b.setXiuluo(c, c.xiuluo+1)
 			}
 		}
@@ -118,9 +117,14 @@ func (b *battle) deathSkillEvent(x *unit) {
 // setXiuluo 改修罗点并刷新客户端头像计数（XIULUO_COUNT）。
 func (b *battle) setXiuluo(c *unit, n int) {
 	c.xiuluo = max(n, 0)
+	b.xiuluoCount(c, c.xiuluo)
+}
+
+// xiuluoCount 写 XIULUO_COUNT（站位, 计数）：阿修罗 / 天女魃 / 小夫子头像上的数字（war/config.lua isXiuLuo）。
+func (b *battle) xiuluoCount(c *unit, n int) {
 	b.w.u8(CmdXiuluoCount)
 	b.w.u8(c.Pos)
-	b.w.u8(min(c.xiuluo, 255))
+	b.w.u8(min(max(n, 0), 255))
 }
 
 // attRaised：t 的攻击刚提升。记录本场最高攻击（噬心龙咒）；
@@ -129,15 +133,8 @@ func (b *battle) setXiuluo(c *unit, n int) {
 // 突袭这类攻击后清除的临时加攻（732 次）和 buff 加攻（战呼 5262、神之力 5203/5204…）从不触发；
 // 吕洞宾在后阵也会触发。
 func (b *battle) attRaised(t *unit, id int32) {
-	// 本场最高攻击只算留得住的攻击：不含「攻击后清除」的临时加攻（突袭、踏浪…）和战呼（下次行动后清除）——否则龙再入阵
-	// 恢复的「最高值」里带着当时的临时加成
-	if !b.inTempUp {
-		keep := t.att - t.tempAtt
-		if s := t.has(stZhanhu); s != nil {
-			keep -= s.val
-		}
-		t.peakAtt = max(t.peakAtt, keep)
-	}
+	// 噬心龙咒记录本场达到过的最高攻击，包含临时及增益加攻。
+	t.peakAtt = max(t.peakAtt, t.att)
 	if t.Race != raceHuman || id < 20000 || b.inTempUp {
 		return
 	}
@@ -173,10 +170,9 @@ func (b *battle) backToBench(x *unit) {
 		}
 		if k := c.tal(famHuiMeng); k != nil && c.perRound[2] < 3 {
 			c.perRound[2]++
-			grow := k.tjBoost(int64(c.MaxHP) * int64(k.param(0)) / 100)
+			grow := k.tjBoost(c.baseHP * int64(k.param(0)) / 100)
 			b.show(c, k.id, c)
-			b.changeMaxHP(c, k.id, grow)
-			b.heal(c, k.id, grow)
+			b.growAndHeal(c, k.id, grow)
 		}
 	}
 	b.benchReset(x)
@@ -191,10 +187,10 @@ func (b *battle) benchReset(x *unit) {
 	if d := x.baseAtt - x.att; d != 0 {
 		b.changeAtt(x, 0, d)
 	}
-	if d := int64(x.MaxHP) - x.maxHP; d != 0 {
+	if d := x.baseHP - x.maxHP; d != 0 {
 		b.changeMaxHP(x, 0, d)
 	}
-	keep := map[int32]bool{5141: true, x.burnShown: true, x.huweiBuff: true, x.dushaBuff: true, x.huilieBuff: true}
+	keep := map[int32]bool{5141: true, x.huweiBuff: true, x.dushaBuff: true, x.huilieBuff: true}
 	for _, s := range x.status {
 		keep[s.buff] = true
 	}
@@ -225,8 +221,14 @@ func (b *battle) afterSplit(u *unit) {
 // zhanhu 给 x 上战呼（buff 5261-5270：提升 10%×等级 攻击力，下次行动后清除）。
 func (b *battle) zhanhu(x *unit, buff int32) {
 	lv := int64(buff - 5260)
-	if lv < 1 || lv > 10 || x.has(stZhanhu) != nil {
+	if lv < 1 || lv > 10 || !x.alive() {
 		return
+	}
+	if old := x.has(stZhanhu); old != nil {
+		if old.buff >= buff {
+			return
+		}
+		b.clearStatus(x, stZhanhu)
 	}
 	b.inTempUp = true                       // 战呼到期清除：不算进本场最高攻击（attRaised）
 	n := b.changeAtt(x, 0, x.att*lv*10/100) // 实际加了多少（坚韧护法封顶），到期按它扣回
@@ -279,4 +281,23 @@ func (b *battle) cutShield(x *unit, n int64, magic bool) int64 {
 	*s -= n
 	b.shieldCmd(cmd, 2, x, n)
 	return n
+}
+
+// 技能类别（取经第 7 难「有蓄力技 / 死亡技 / 入阵技 / 暴走技的护法」，xymsrv/qujing.go）。
+const (
+	KindCharge = iota + 1
+	KindDeath
+	KindEnter
+	KindRampage
+)
+
+// HasTalentKind 报告 tals 里有没有 kind 类的神通。
+func HasTalentKind(tals []int32, kind int) bool {
+	set := map[int][]family{KindCharge: chargeTalents, KindDeath: deathFamilies, KindEnter: enterFamilies, KindRampage: rampageTalents}[kind]
+	for _, id := range tals {
+		if k := newTalent(id); k != nil && slices.Contains(set, k.fam) {
+			return true
+		}
+	}
+	return false
 }

@@ -15,7 +15,26 @@ func (b *battle) bench(side int) []*unit {
 	return out
 }
 
+// swapPool 把带【雷影庇护】的雷震子排到最后：有别的可选后阵时，被动换人不会把他换上前阵；
+// 只有他是唯一可选时才会选他（2026-11-16 用户规则）。
+func swapPool(bench []*unit) []*unit {
+	var normal []*unit
+	for _, x := range bench {
+		if x.tals[famLeiYingBiHu] == nil {
+			normal = append(normal, x)
+		}
+	}
+	if len(normal) > 0 {
+		return normal
+	}
+	return bench
+}
+
+// benchForSwap 是遁让 / 换位法术 / 避阵这类「从后阵随机挑一个换上前」的可选池。
+func (b *battle) benchForSwap(side int) []*unit { return swapPool(b.bench(side)) }
+
 // quzhuPick：[驱逐] t 时换上来的人——随机一名后阵护法，有可能是已阵亡的（被吞噬的除外，FAQ 驱逐）；没有返回 nil。
+// 同样先避开雷震子，只有他是唯一可选时才选他。
 func (b *battle) quzhuPick(t *unit) *unit {
 	var bn []*unit
 	for _, x := range b.units[t.side] {
@@ -23,6 +42,7 @@ func (b *battle) quzhuPick(t *unit) *unit {
 			bn = append(bn, x)
 		}
 	}
+	bn = swapPool(bn)
 	if len(bn) == 0 {
 		return nil
 	}
@@ -64,39 +84,77 @@ func (b *battle) swap(x, y *unit) {
 	for _, z := range []*unit{x, y} {
 		if z.alive() && !z.front() {
 			b.backToBench(z)
+			if wasFront[z] && z.alive() && z.Race == raceHuman && z.charge > 0 {
+				// MOVE 的退阵动画清空客户端的蓄力显示，恢复现有层数。
+				b.chargeDelta(z, z.charge)
+			}
 		}
 	}
 	for _, z := range []*unit{x, y} {
-		if z.alive() && z.front() && !wasFront[z] && b.enterDepth < 3 {
-			b.enterDepth++
-			b.enter(z)
-			b.enterDepth--
+		if z.alive() && z.front() && !wasFront[z] {
+			b.rampage(z) // 换上前阵先判定暴走，再结算入阵及敌方入阵反应。
+			if b.enterDepth < 3 {
+				b.enterDepth++
+				b.enter(z)
+				b.enterDepth--
+			}
 		}
 	}
 }
 
-// dunrangTo 是遁让交换的后阵护法：后阵存活护法从左到右第一个（用户规则），跳过 skip；只剩 skip 时就是它，没有返回 nil。
-func (b *battle) dunrangTo(side int, skip *unit) *unit {
-	var first, alt *unit
-	for _, y := range b.bench(side) {
-		if y == skip {
-			if alt == nil || y.slot() < alt.slot() {
-				alt = y
-			}
-		} else if first == nil || y.slot() < first.slot() {
-			first = y
+// dunrangTo 在所有可用的存活后阵护法中等概率随机选择，不按技能或站位排序；
+// 带【雷影庇护】的雷震子最后才考虑（有别的后阵就不选他）。
+func (b *battle) dunrangTo(side int) *unit {
+	bench := b.benchForSwap(side)
+	if len(bench) == 0 {
+		return nil
+	}
+	return bench[b.rng.IntN(len(bench))]
+}
+
+// leiyingSwapTo：雷影庇护触发遁让时换谁上来（2026-11-16 调整：不再随机）。
+// 优先级：未[遁入]过的入阵护法 → 已[遁入]过的入阵护法 → 有[遁让]的护法 → 其它，同档按站位从左到右。
+// 雷震子（protector）会让给任何其它可用后阵，只有没有别的存活后阵时才被换上前阵。
+func (b *battle) leiyingSwapTo(side int, protector *unit) *unit {
+	bn := b.bench(side)
+	if len(bn) == 0 {
+		return nil
+	}
+	sort.SliceStable(bn, func(i, j int) bool { return bn[i].slot() < bn[j].slot() })
+	rank := func(x *unit) int {
+		switch {
+		case hasAny(x, enterFamilies) && !x.dunru:
+			return 0
+		case hasAny(x, enterFamilies):
+			return 1
+		case x.tals[famDunRang] != nil:
+			return 2
+		}
+		return 3
+	}
+	var best *unit
+	for _, x := range bn {
+		if x == protector {
+			continue
+		}
+		if best == nil || rank(x) < rank(best) {
+			best = x
 		}
 	}
-	if first == nil {
-		return alt
+	if best == nil { // 只有雷震子自己可用
+		for _, x := range bn {
+			if x == protector {
+				return x
+			}
+		}
 	}
-	return first
+	return best
 }
 
 // dunruTarget 是[遁入]交换的后阵护法（图鉴 FAQ）：未[遁入]过的入阵护法 → 已[遁入]过的入阵护法 → 无入阵技护法，
 // 同档从左到右。
 func (b *battle) dunruTarget(side int) *unit {
-	bn := b.bench(side)
+	bn := swapPool(b.bench(side)) // 雷震子最后考虑
 	sort.SliceStable(bn, func(i, j int) bool { return bn[i].slot() < bn[j].slot() })
 	rank := func(x *unit) int {
 		switch {

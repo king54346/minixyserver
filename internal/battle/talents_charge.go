@@ -74,6 +74,10 @@ func (b *battle) chargeUp(u *unit) {
 		if k.fam == famJianGe && k.tjOn() && u.charge+1 < chargeCap(k) && b.chance(k.tjPct()) {
 			n++ // 剑歌激发：蓄力时 $x% 额外一层
 		}
+		if b.factor(LxCharge) {
+			n++ // 裂隙「蓄」：每次蓄力 2 层
+		}
+		n = min(n, chargeCap(k)-u.charge)
 		b.setCharge(u, u.charge+n)
 	}
 }
@@ -86,6 +90,10 @@ func (b *battle) setCharge(u *unit, n int) {
 	if d == 0 {
 		return
 	}
+	b.chargeDelta(u, d)
+}
+
+func (b *battle) chargeDelta(u *unit, d int) {
 	op := 1
 	if d < 0 {
 		op, d = 2, -d
@@ -111,12 +119,12 @@ func (b *battle) releaseCharge(u *unit, k *talent) {
 		for _, x := range ts {
 			b.boon(x)
 		}
-	case famJianGe: // 消耗蓄力，每层提升 b% 当前攻击（攻击后清除）；c% 概率把消耗的层数转给另一位队友
-		b.tempUp(u, k, u.atkBase()*int64(k.param(1)*n)/100)
+	case famJianGe: // 消耗蓄力，每层提升 b% 初始攻击（攻击后清除）；c% 概率把消耗的层数转给另一位队友
+		b.tempUp(u, k, u.baseAtt*int64(k.param(1)*n)/100)
 		if b.chance(k.param(2)) {
 			// 转给战位最前且未满蓄力的护法，加满为止，溢出消失（FAQ）
 			var to *unit
-			for _, x := range b.units[u.side] {
+			for _, x := range b.teammates(u) {
 				if k2 := chargeTalent(x); x != u && x.alive() && !x.gone && k2 != nil && x.charge < chargeCap(k2) &&
 					(to == nil || x.slot() < to.slot()) {
 					to = x
@@ -242,7 +250,7 @@ func (b *battle) releaseCharge(u *unit, k *talent) {
 		if dead := b.deadAllies(u.side); len(dead) > 0 { // 从本方已阵亡护法中随机选取（FAQ）
 			x := dead[b.rng.IntN(len(dead))]
 			b.show(u, k.id, x)
-			b.relive(x, k.id, x.maxHP*int64(k.param(1))/100)
+			b.reliveInitial(x, k.id, k.param(1))
 			if k.tjOn() && b.chance(k.tjPct()) {
 				b.setStatus(x, stImmune, 0, 1, false, 5321, slotBuff)
 				b.zhanhu(x, 5265)
@@ -256,11 +264,11 @@ func (b *battle) releaseCharge(u *unit, k *talent) {
 				b.changeAtt(x, k.id, int64(float64(x.att)*k.tjX()/100))
 			}
 		}
-	case famGuaXiang: // 全体友方物理结界：每人吸收 b% 上限（$q 按族描述取每名受者的自身上限）
+	case famGuaXiang: // 全体友方物理结界：吸收 $q 点（客户端 talent_mgr：$q = b% × 释放者生命上限，同百草）
 		allies := b.allies(u)
 		b.show(u, k.id, allies...)
 		for _, x := range allies {
-			b.addShield(x, x.maxHP*int64(k.param(1))/100, false)
+			b.addShield(x, u.maxHP*int64(k.param(1))/100, false)
 			if k.tjOn() {
 				b.heal(x, k.id, int64(float64(x.maxHP)*k.tjX()/100))
 			}

@@ -45,8 +45,8 @@ func TestZhenfaStats(t *testing.T) {
 	x := newUnit(fu(105, 100, 1000, 5), 1)
 	b := faqBattle(a, d, x)
 	b.setupZhenfa([2]Formation{{Type: 4, Stair: 5, Lv: [5]int{0, 0, 0, 3, 0}}, {Type: 1, Stair: 1}})
-	if d.maxHP != 1000+600+36 || d.hp != d.maxHP || d.MaxHP != int32(d.maxHP) || d.Speed != 6 {
-		t.Fatalf("pos4 maxHP %d hp %d speed %d", d.maxHP, d.hp, d.Speed)
+	if d.maxHP != 1000+600+36 || d.hp != d.maxHP || d.baseHP != d.maxHP || d.MaxHP != 1000 || d.Speed != 6 {
+		t.Fatalf("pos4 maxHP %d hp %d battle base %d roster base %d speed %d", d.maxHP, d.hp, d.baseHP, d.MaxHP, d.Speed)
 	}
 	if a.tal(family(lose.FamilyID)) != nil {
 		t.Fatal("pos1 talent kept")
@@ -117,5 +117,20 @@ func TestZhenfaFollowsPos(t *testing.T) {
 	cmds, err := DecodeRecord(b.w.b)
 	if err != nil || len(cmds) == 0 {
 		t.Fatal(err)
+	}
+}
+
+func TestZhenfaHPGrowthCapFollowsPos(t *testing.T) {
+	u := newUnit(fu(4, 100, 1000, 5), 0)
+	b := faqBattle(u)
+	b.setupZhenfa([2]Formation{{Type: 4, Stair: 5, Lv: [5]int{1, 1, 1, 1, 1}}})
+	b.changeMaxHP(u, 1, 100000)
+	if u.maxHP != 1612*8 {
+		t.Fatalf("formation cap = %d, want %d", u.maxHP, 1612*8)
+	}
+	u.Pos = 6
+	b.zfSync(u)
+	if u.maxHP != 8000 || u.baseHP != 1000 || u.zfFixed[1] != 0 {
+		t.Fatalf("after leaving formation: maxHP=%d baseHP=%d bonus=%d", u.maxHP, u.baseHP, u.zfFixed[1])
 	}
 }

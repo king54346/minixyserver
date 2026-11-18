@@ -78,6 +78,11 @@ func (b *battle) keepTemp(u *unit) int64 {
 			keep += int64(float64(u.fired[f]) * k.tjX() / 100)
 		}
 	}
+	if k := u.tals[famYuBing]; k != nil && u.fired[famYuBing] > 0 && u.yubingSwords > 0 {
+		// 驭兵：每有一把剑保留加值的 c%（原来没做）
+		keep += u.fired[famYuBing] * int64(min(u.yubingSwords*k.param(2), 100)) / 100
+	}
+	u.yubingSwords = 0
 	return min(keep, u.tempAtt)
 }
 
@@ -92,6 +97,24 @@ func (u *unit) tuxiTJ() bool {
 func (b *battle) raceCount(side, race int) int64 {
 	return countRace(b.units[side], race)
 }
+
+// raceSum：「本方每有一名 X 族护法，额外 b%×其攻击力 / 生命值」——FAQ「[其攻击力]指的是阵中的每一位同阵营护法」：
+// 每名同族护法各自的数值相加（用户确认），前后阵、已阵亡都算，超出 4 名取前 4 名。
+func (b *battle) raceSum(side, race int, val func(x *unit) int64) int64 {
+	var sum int64
+	n := 0
+	for _, x := range b.units[side] {
+		if x.Race == race && n < 4 {
+			sum += val(x)
+			n++
+		}
+	}
+	return sum
+}
+
+func baseAttOf(x *unit) int64 { return x.baseAtt }
+func attOf(x *unit) int64     { return x.att }
+func maxHPOf(x *unit) int64   { return x.maxHP }
 
 func countRace(us []*unit, race int) int64 {
 	n := 0

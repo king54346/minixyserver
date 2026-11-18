@@ -162,10 +162,10 @@ func TestT5Families(t *testing.T) {
 		// 横冲直撞4 击败后追击
 		{fam: famHengChongZhiZhuang,
 			t1: []*Fighter{fu(1, 1000, 1000, 10, 22206)}, t2: []*Fighter{fu(101, 0, 10, 1), fu(102, 0, 100000, 1)}, check: ok},
-		// 火炮之术4 弹丸 24% 初始攻击
+		// 火炮之术4 弹丸 30% 初始攻击
 		{fam: famHuoPaoZhiShu,
 			t1: []*Fighter{fu(1, 100, 1000, 1, 22158), fu(2, 0, 1000, 1, 20050)}, t2: []*Fighter{fu(101, 0, 100000, 1)},
-			check: func(_ Result, c []Cmd) string { return want(hasCmd(c, CmdSubHP, 22158, 101, 24), "no 24 pellet") }},
+			check: func(_ Result, c []Cmd) string { return want(hasCmd(c, CmdSubHP, 22158, 101, 30), "no 30 pellet") }},
 		// ---- 受到伤害 ----
 		// 不侵10 抵抗捆缚
 		{fam: famBuQin,
@@ -240,7 +240,7 @@ func TestT5Families(t *testing.T) {
 		{t1: chargeT1(21778), t2: chargeT2(),
 			check: func(_ Result, c []Cmd) string {
 				got := subHPTo(c, 1)
-				return want(contains(got, 16) && contains(got, 12), fmt.Sprintf("hits on carrier %v, want 16 and 12", got))
+				return want(contains(got, 20) && contains(got, 16), fmt.Sprintf("hits on carrier %v, want 20 and 16", got))
 			}},
 		// 龙虎仙丹4 物理结界 + 续命丹
 		{fam: famLongHuXianDan, t1: chargeT1(22014), t2: chargeT2(),

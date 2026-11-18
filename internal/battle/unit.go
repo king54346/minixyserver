@@ -9,110 +9,124 @@ import (
 
 // Fighter 是上场单位的静态数据（由阵容/关卡生成）。
 type Fighter struct {
-	ID      int32 // 我方 npcnum / 敌方怪物号
-	Pos     int   // 我方 1-9，敌方 101-109
 	Name    string
-	Att     int32
-	HP      int32
-	MaxHP   int32
-	Speed   int
-	Icon    int32
-	Race    int
-	Grade   int     // 卡牌 / 怪物等级，参与法术伤害上限
 	Talents []int32 // 神通号
 	// TalentTJ 与 Talents 按下标对应：该神通的激发等级 0–5（S_UPDATE_PET tlxlv，见 jifa.go）；可短于 Talents。
 	TalentTJ []int
-	Magic    int32 // 法术号（0 = 无）
-	MagicLv  int
 	Books    [][2]int32 // 穿戴的法术书：{法术号, 等级}，与天生法术一起参与施放
 	// BookRate 与 Books 按下标对应：该书施放几率的额外加成（百分点，天将每阶 +2）；可短于 Books。
 	BookRate []int
 	// BookJX 与 Books 按下标对应：法术书的精修次数（法术发动后对目标附加精修 buff，jingxiu.go）；可短于 Books。
 	BookJX []int
-	// MagicUp / HealUp：法术伤害 / 回复效果提升（百分点，试炼的魔法 / 治疗加成），与队长技同类加成相加。
-	MagicUp, HealUp int
 	// 以下只用于战报里的护法详情（S_FIGHT_RECORD.otherparam），不参与计算。
 	Suits  [][5]int32 // 穿戴的装备 {装备位 1–3, 装备号, 强化等级, 天将阶, 镶嵌的宝石道具号}
 	BookTJ []int      // 与 Books 按下标对应：法术书的天将阶
 	// Gems：装备镶嵌的宝石加成（百分点）：普通伤害、法术伤害、普通伤害抗性、法术伤害抗性、被治疗效果、回复效果，
 	// 与队长技同类加成相加（xymsrv/inlay.go）。
 	Gems [6]int
-	// SkillFull：三个神通都升满（战报 team 的 skillfull，客户端卡牌左上角显示神通满的种族徽标）。
-	SkillFull bool
 	// 洞府修为（xymsrv/dongfu_xiuwei.go）：ElemRes 按属性（0 道 1 土 2 水 3 火 4 雷）减免受到的属性伤害 %；
 	// RaceDmg 按目标种族（1 人 2 魔 3 仙 4 兽）增加造成的伤害 %；DaoImmune 是免疫道属性伤害的几率 %。
-	ElemRes   [5]int
-	RaceDmg   [5]int
-	DaoImmune int
+	ElemRes [5]int
+	RaceDmg [5]int
+	Pos     int // 我方 1-9，敌方 101-109
+	Speed   int
+	Race    int
+	Grade   int // 卡牌 / 怪物等级，参与法术伤害上限
+	MagicLv int
+	// MagicUp / HealUp：法术伤害 / 回复效果提升（百分点，试炼的魔法 / 治疗加成），与队长技同类加成相加。
+	MagicUp, HealUp int
+	DaoImmune       int
+	ID              int32 // 我方 npcnum / 敌方怪物号
+	Att             int32
+	HP              int32
+	MaxHP           int32
+	PanelSetHP      int32 // 已计入 HP/MaxHP 的装备套装气血
+	Icon            int32
+	Magic           int32 // 法术号（0 = 无）
+	// SkillFull：三个神通都升满（战报 team 的 skillfull，客户端卡牌左上角显示神通满的种族徽标）。
+	SkillFull bool
+	FrameType int32 // Client card frame; also transmitted via recordParams idx=12.
 }
 
 func (f *Fighter) slot() int { return f.Pos % enemyBase }
 
 func (f *Fighter) TeamMsg() xym.Msg {
 	return xym.Msg{"id": f.ID, "pos": f.Pos, "name": f.Name, "att": f.Att, "hp": f.HP,
-		"sp": f.Speed, "icon": f.Icon, "race": f.Race, "skillfull": b2i(f.SkillFull)}
+		"sp": f.Speed, "icon": f.Icon, "race": f.Race, "skillfull": b2i(f.SkillFull), "diyFrame": f.FrameType}
 }
 
 // unit 是战斗中的单位（带运行时状态）。
 type unit struct {
 	*Fighter
-	side         int   // 0 我方 1 敌方
-	att, hp      int64 // 当前攻击 / 生命
-	maxHP        int64
-	baseAtt      int64 // 初始攻击（「提升 x% 初始攻击力」以它为基数）
-	tals         map[family]*talent
-	magics       []*castable // 天生法术在前，其后是法术书
-	shield       int64       // 物理结界
-	mshield      int64       // 属性结界
-	poison       []poison
-	hurtUp       int // 会猎：受到物理伤害增加 %
-	tempAtt      int64
-	tempEpoch    int   // 攻击重置为初始值的次数（回后阵 benchReset、阵亡）：攻击行为中途被重置过，结束时就不再扣临时加攻
-	dmgUp        int   // 本次攻击行为的伤害提高 %（灭法、异态；结算伤害时乘，attackAction 结束时还原）
-	tempBase     int64 // 当前攻击行为开始时已有的临时加攻（外层攻击行为留下的），见 atkBase
-	acted        bool
-	gone         bool // 阵亡后槽位已被后阵补上：离场，不能再被复活
-	status       map[stKey]*status
-	bumiequ      int      // 不灭躯发动过的次数
-	attachSoul   bool     // 本次攻击附带锢魂（魔煞）
-	attachNoHeal int32    // 本次攻击附带禁疗的 buff（兽妖）
-	burnShown    int32    // 当前显示的燃烧图标（burnIcon；0 = 无）
-	shenliPct    int64    // 神之力累计提升初始攻击的 %（shenli）
-	shenliAtt    int64    // 神之力累计实际加的攻击（回后阵重置时保留）
-	shenliShown  int32    // 当前显示的神之力图标
-	zfFixed      [3]int64 // 阵法阵位给的初始攻击 / 初始生命 / 先攻（zhenfa.go zfSync）
-	zfLost       family   // 阵法阵位「失去神通」的族（在该阵位时不能发动）
-	huweiBuff    int32    // 狐尾（九尾仙车）：图标、等级、生命上限减益时最少保留的 %（huwei）
-	huweiLv      int
-	huweiFloor   int
-	huoshiBuff   int32                // 活尸图标（huoshi），死亡时去掉
-	huilieBuff   int32                // 会猎当前显示的 buff 号
-	huilie       int                  // 会猎：当前受物理伤害增加 %（并入 hurtUp）
-	reviveAt     int                  // 「2 回合后复活」：在第几回合结束时复活（markRevive）
-	reviveMark   int32                // 等待复活时挂的返死 / 还魂 buff（markRevive）
-	reviveIn     int                  // 返死：还有几回合复活（0 = 无）
-	revivePct    int                  // 返死复活血量 %（默认 reviveHPPct，群夭诀按 5551-5554 覆写）
-	egg          bool                 // 归元火之卵化身（每回合开始放火系群法）
-	doomIn       int                  // 不灭躯自杀倒计时（回合结束递减，归零自行死亡）
-	charge       int                  // 蓄力（飞石、三板斧）
-	devoured     bool                 // 吞噬（只能 1 次）
-	raged        bool                 // 暴走已触发
-	revived      bool                 // 被复活过（暴走条件之一）
-	swords       int                  // 仙剑数
-	dupTals      map[family][]*talent // 同族的其他来源（护法自带 + 套装各一个突袭等）：被主条目顶掉的那些，见 newUnit
-	lead         leadBonus            // 本方队长技加成
-	fired        map[family]int64     // 本次行动各族的临时加攻（tempUp 记录，行动结束清空）
-	fengkuang    int                  // 疯狂触发次数（激发：满 5 次获得乱舞）
-	skillDone    int                  // 铸剑 / 天地灵气持有者已响应过的触发种类（skZhasi | skDeath | skEnter）
-	skillUps     int                  // 铸剑 / 天地灵气已重置的轮数（之后的效果按 $x% 增强）
-	spd          int                  // 先攻加值（进化 / 蟠桃宴激发 +1，凝滞 −4 另见状态）
-	dusha        int                  // 毒砂（精修）：每回合开始损失攻击力 %（持续到战斗结束，取最高级）
-	dushaBuff    int32
+	side            int   // 0 我方 1 敌方
+	att, hp         int64 // 当前攻击 / 生命
+	maxHP           int64
+	baseHP          int64 // 初始生命上限，含阵法和开场套装加成
+	hpBonus         int64 // 永久生命上限加成（雷影庇护天匠等），复活重置时保留
+	baseAtt         int64 // 初始攻击（「提升 x% 初始攻击力」以它为基数）
+	tals            map[family]*talent
+	magics          []*castable // 天生法术在前，其后是法术书
+	shield          int64       // 物理结界
+	mshield         int64       // 属性结界
+	poison          []poison
+	hurtUp          int // 会猎：受到物理伤害增加 %
+	tempAtt         int64
+	tempEpoch       int // 攻击重置为初始值的次数（回后阵 benchReset、阵亡）：攻击行为中途被重置过，结束时就不再扣临时加攻
+	dmgUp           int // 本次攻击行为的伤害提高 %（灭法、异态；结算伤害时乘，attackAction 结束时还原）
+	tempBase        int64
+	yubingSwords    int     // 驭兵触发时身上的剑数（攻击后按它保留加值）
+	hard            int     // 取经坚硬：受到伤害时有这么多 % 概率只扣 1 点
+	hardAll         bool    // BOSS-坚硬：生命流失也只扣 1 点（坚硬10 不含生命流失）
+	splitDone       [3]bool // 取经分裂：75% / 50% / 25% 三次复制各一次
+	hitsTaken       int     // 受到伤害的次数（取经特殊关「受到 7 次伤害立即死亡」）
+	shihouBy        *unit   // 狮吼：混乱结束后要吸取生命上限的文殊
+	shihouTal       *talent // 狮吼神通
+	diedWithMShield bool    // 阵亡那一刻身上有法术结界（兽王触发神佑10） // 当前攻击行为开始时已有的临时加攻（外层攻击行为留下的），见 atkBase
+	acted           bool
+	gone            bool // 阵亡后槽位已被后阵补上：离场，不能再被复活
+	status          map[stKey]*status
+	bumiequ         int      // 不灭躯发动过的次数
+	attachSoul      bool     // 本次攻击附带锢魂（魔煞）
+	attachNoHeal    int32    // 本次攻击附带禁疗的 buff（兽妖）
+	shenliPct       int64    // 神之力累计提升初始攻击的 %（shenli）
+	shenliAtt       int64    // 神之力累计实际加的攻击（回后阵重置时保留）
+	shenliShown     int32    // 当前显示的神之力图标
+	zfFixed         [3]int64 // 阵法阵位给的初始攻击 / 初始生命 / 先攻（zhenfa.go zfSync）
+	zfLost          family   // 阵法阵位「失去神通」的族（在该阵位时不能发动）
+	huweiBuff       int32    // 狐尾（九尾仙车）：图标、等级与施加时计算的生命上限保留值（huwei）。
+	huweiLv         int
+	huweiFloor      int64                // 施加狐尾时按当时生命上限计算的最低保留值。
+	huoshiBuff      int32                // 活尸图标（huoshi），死亡时去掉
+	huilieBuff      int32                // 会猎当前显示的 buff 号
+	huilie          int                  // 会猎：当前受物理伤害增加 %（并入 hurtUp）
+	reviveAt        int                  // 「2 回合后复活」：在第几回合结束时复活（markRevive）
+	reviveMark      int32                // 等待复活时挂的返死 / 还魂 buff（markRevive）
+	reviveIn        int                  // 返死：还有几回合复活（0 = 无）
+	revivePct       int                  // 返死复活血量 %（默认 reviveHPPct，群夭诀按 5551-5554 覆写）
+	egg             bool                 // 归元火之卵化身（每回合开始放火系群法）
+	doomIn          int                  // 不灭躯自杀倒计时（回合结束递减，归零自行死亡）
+	charge          int                  // 蓄力（飞石、三板斧）
+	devoured        bool                 // 吞噬（只能 1 次）
+	raged           bool                 // 暴走已触发
+	revived         bool                 // 被复活过（暴走条件之一）
+	yuanxingActive  bool                 // Round-start transformation enables protection until leaving the front.
+	swords          int                  // 仙剑数
+	dupTals         map[family][]*talent // 同族的其他来源（护法自带 + 套装各一个突袭等）：被主条目顶掉的那些，见 newUnit
+	lead            leadBonus            // 本方队长技加成
+	fired           map[family]int64     // 本次行动各族的临时加攻（tempUp 记录，行动结束清空）
+	fengkuang       int                  // 疯狂触发次数（激发：满 5 次获得乱舞）
+	skillDone       int                  // 铸剑 / 天地灵气持有者已响应过的触发种类（skZhasi | skDeath | skEnter）
+	skillUps        int                  // 铸剑 / 天地灵气已重置的轮数（之后的效果按 $x% 增强）
+	spd             int                  // 先攻加值（进化 / 蟠桃宴激发 +1，凝滞 −4 另见状态）
+	dusha           int                  // 毒砂（精修）：每回合开始损失攻击力 %（持续到战斗结束，取最高级）
+	dushaBuff       int32
 
 	// 以下是个别神通族的运行时状态（见各 talents_*.go）
 	peakAtt    int64              // 本场最高攻击（噬心龙咒）
 	jianyi     int                // 剑意层数（紫青剑：回合结束时位于后阵 +1）
 	pellets    int                // 不稳定弹丸（火炮之术）
+	pellFull   int                // 开场装弹数（火炮之术天匠每 3 回合回满的目标值）
+	pellTick   int                // 距上次回满经过的回合数（火炮之术天匠）
 	sacrificed int64              // 献祭的生命（十日圣母）
 	xiuluo     int                // 修罗点（修罗隐身）
 	tianmo     int                // 天魔觉醒已提升次数
@@ -126,6 +140,7 @@ type unit struct {
 	atkTarget  *unit              // 上一次攻击行为原定的目标（守卫 / 元形代承前）
 	atkLanded  bool               // 上一次普攻命中了（没被闪避 / 盲目躲开；挥扫用）
 	atkDealt   int64              // 上一次普攻的伤害值（血气）
+	atkBasis   int64              // 本次攻击减伤前的出手伤害（挥扫、吸血；未乘通用队长增伤）
 	shenyouAt  int                // 神佑：上次触发的回合
 	zhasiAt    int                // 诈死：上次触发的回合（0 = 没触发过）
 	swordKind  int                // 仙剑属性（第一次获得仙剑时随机，整场不变）：0 道 1 土 2 水 3 火 4 雷
@@ -184,9 +199,8 @@ func (t *talent) param(i int) int {
 
 func (u *unit) alive() bool { return u.hp > 0 }
 
-// atkBase 是「攻击时提升 x% 攻击（攻击后清除）」类神通的基数：当前攻击去掉外层攻击行为留下的临时加攻。乱舞 / 连击这类
-// 追加攻击在主攻击的临时加攻还没清除时进行，原来按含临时加攻的攻击算，灭法、突袭等会层层叠加（用户报：逆鳞白龙乱舞中
-// 灭法从 +5012 叠成 +9522，攻击显示到 2 万多）。
+// atkBase保留历史的“排除外层临时值”算法供旧回归使用。
+// 按用户2026-11-02新规则，临时加攻技能已统一直接使用u.att，不再调用此函数。
 func (u *unit) atkBase() int64 { return u.att - u.tempBase }
 
 // speed 是当前先攻：基础 + 加值 − 凝滞，至少 1。
@@ -219,7 +233,7 @@ func (u *unit) talAll(f family) []*talent {
 
 func newUnit(f *Fighter, side int) *unit {
 	u := &unit{Fighter: f, side: side, att: int64(f.Att), hp: int64(f.HP), maxHP: int64(f.MaxHP),
-		baseAtt: int64(f.Att), peakAtt: int64(f.Att), tals: map[family]*talent{}}
+		baseHP: int64(f.MaxHP), baseAtt: int64(f.Att), peakAtt: int64(f.Att), tals: map[family]*talent{}}
 	for _, id := range f.Talents {
 		switch id {
 		case talentBossArmor:
@@ -275,6 +289,9 @@ func (t *unit) freeSlot() int {
 	used := map[int]bool{}
 	for _, s := range t.buffSlot {
 		used[s] = true
+	}
+	for _, p := range t.poison {
+		used[p.slot] = true
 	}
 	for s := 2; s < 250; s++ {
 		if !used[s] {

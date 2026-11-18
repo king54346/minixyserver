@@ -17,6 +17,7 @@ func (b *battle) roundReset() {
 	for side := range b.units {
 		for _, u := range b.units[side] {
 			u.perRound = [3]int{}
+			u.yuanxingActive = false
 		}
 	}
 	for side := range b.units {
@@ -34,8 +35,7 @@ func (b *battle) roundReset() {
 					b.show(u, k.id, u)
 					grow := k.tjBoost(u.sacrificed * int64(k.param(0)) / 100)
 					for _, x := range ts {
-						b.changeMaxHP(x, k.id, grow)
-						b.heal(x, k.id, grow)
+						b.growAndHeal(x, k.id, grow)
 					}
 				}
 			}
@@ -64,6 +64,14 @@ func (b *battle) roundOver() {
 			if u.pellets > 0 { // 火炮之术：不稳定弹丸每回合减半（前后阵都减）
 				u.pellets /= 2
 				b.pelletCount(u)
+			}
+			if k := u.tal(famHuoPaoZhiShu); k != nil && k.tjOn() && u.alive() { // 天匠：每 3 回合回满
+				u.pellTick++
+				if u.pellTick >= huoPaoTJResetRounds {
+					u.pellTick = 0
+					u.pellets = u.pellFull
+					b.pelletCount(u)
+				}
 			}
 		}
 	}
@@ -95,10 +103,18 @@ func (b *battle) bloodPool(side int) {
 	b.w.u8(t.Pos)
 	b.w.u32(half)
 	b.propertyHurt(by, t, magicFireHurt, half, 3)
-	for _, c := range b.frontOf(side) {
-		k := c.tal(famTianZhan)
-		if k == nil || !t.alive() {
+	for _, c := range b.units[side] {
+		if !c.alive() || c.gone {
 			continue
+		}
+		k := c.tal(famTianZhan)
+		if k == nil {
+			continue
+		}
+		if !t.alive() { // 血池击败了目标：重新选当前场上气血最低且没有无敌的敌人（FAQ）
+			if t = b.easyDie(1 - side); t == nil {
+				return
+			}
 		}
 		adj := b.adjacent(t)
 		if k.tjOn() {
@@ -128,7 +144,10 @@ func (b *battle) roundStart(u *unit) {
 		if len(dead) > 0 {
 			x := dead[b.rng.IntN(len(dead))]
 			b.show(u, k.id, x)
+			b.leaveClear(x, true)
+			b.resetInitial(x, k.id)
 			b.relive(x, k.id, int64(float64(x.maxHP)*k.tjY()/100))
+			b.setStatus(x, stNoSoul, 0, maxRounds, false, 5141, slotDebuff) // 复活后带无法驱散的锢魂（FAQ）
 		}
 	}
 	if k := u.tal(famWuZhiShan); k != nil {
@@ -138,15 +157,16 @@ func (b *battle) roundStart(u *unit) {
 		b.onWuJiangZhiShang(u, k)
 	}
 	if k := u.tal(famXiuLuoYinShen); k != nil && u.xiuluo >= k.param(3) {
-		// 消耗 d 点修罗点：战意 +5、隐身1、神之力（buff 参数 2：+3%×等级 攻击）、鬼斧（参数 3，只演出）
+		// 消耗 d 点修罗点：战意 +5、隐身1、神之力（buff 参数 2：+3%×等级 攻击）、鬼斧（参数 3）
 		b.setXiuluo(u, u.xiuluo-k.param(3))
 		b.show(u, k.id, u)
 		b.addZY(u.side, 5)
 		b.setStatus(u, stHidden, 0, 1, false, int32(k.param(0)), slotBuff)
 		b.shenli(u, int32(k.param(1)), int64(k.param(1)-5200)*3) // 神之力（参数 1）
-		b.buff(u, int32(k.param(2)), 1)                          // 鬼斧（参数 2，只演出）
+		b.applyBuff(u, u, int32(k.param(2)))                     // 鬼斧：守卫穿透与击杀还魂
 	}
 	if k := u.tal(famCangJianYuHua); k != nil && b.chance(k.param(0)) {
+		// 发给己方前阵随机护法
 		if allies := b.allies(u); len(allies) > 0 {
 			x := allies[b.rng.IntN(len(allies))]
 			b.show(u, k.id, x)
@@ -161,7 +181,7 @@ func (b *battle) roundStart(u *unit) {
 		// 则获得蹈火 / 会猎 / 毒爪 / 异态（参数 2-5，buff 魔龙x）直到战斗结束。
 		need := u.att * int64(k.param(0)) / 100
 		// 吸取顺序（FAQ）：敌方法术结界 → 敌方物理结界 → 我方法术结界 → 我方物理结界，同项里结界最少的先吸；
-		// 不吸自己，也不吸另一个带魔龙 / 飞仙的护法。
+		// 不吸自己，也不吸另一个带魔龙的护法（带飞仙的照吸，用户确认）。
 		var got [2]int64 // 物理、法术
 		shown := false
 		for _, grp := range []struct {
@@ -170,7 +190,7 @@ func (b *battle) roundStart(u *unit) {
 		}{{b.foes(u), true}, {b.foes(u), false}, {b.allies(u), true}, {b.allies(u), false}} {
 			var pool []*unit
 			for _, x := range grp.us {
-				if x != u && x.tals[famMoLong] == nil && x.tals[famFeiXian] == nil {
+				if x != u && x.tals[famMoLong] == nil {
 					pool = append(pool, x)
 				}
 			}
@@ -243,9 +263,8 @@ func (b *battle) roundStart(u *unit) {
 						b.buff(x, 5141, maxRounds) // 锢魂
 					}
 					b.changeAtt(u, k.id, x.baseAtt*int64(k.param(1))/100)
-					grow := int64(x.MaxHP) * int64(k.param(1)) / 100
-					b.changeMaxHP(u, k.id, grow)
-					b.heal(u, k.id, grow)
+					grow := x.baseHP * int64(k.param(1)) / 100
+					b.growAndHeal(u, k.id, grow)
 					if !u.devoured {
 						return
 					}
@@ -256,13 +275,16 @@ func (b *battle) roundStart(u *unit) {
 	if k := u.tal(famFengMo); k != nil && b.chance(k.param(0)) {
 		b.onFengMo(u, k)
 	}
+	b.qjRoundStart(u) // 取经首领：防身、自爆、复活队友
 }
 
 func (b *battle) roundEnd(u *unit) {
-	// 燃烧：所有层合计一次结算（ACT_DO(被烧者, 显示的燃烧图标号, 自己) → SUB_HP 17531，生命流失）
-	if n := u.burnPct(); n > 0 && u.alive() && u.burnShown != 0 {
-		b.show(u, u.burnShown, u)
-		b.loseHP(nil, u, burnMagic, u.maxHP*int64(n)/100)
+	// 燃烧：逐层结算（每层 ACT_DO(被烧者, 该层的燃烧 BUFF 号, 自己) → SUB_HP 17531，生命流失）
+	for i := 0; i < len(u.poison) && u.alive(); i++ {
+		if p := u.poison[i]; p.burn {
+			b.show(u, p.buff, u)
+			b.loseHP(nil, u, burnMagic, u.maxHP*int64(p.pct)/100)
+		}
 	}
 	for i := 0; i < len(u.poison) && u.alive(); i++ {
 		p := &u.poison[i]
@@ -286,7 +308,7 @@ func (b *battle) roundEnd(u *unit) {
 			if p.left > 0 {
 				continue
 			}
-			if p.stacked {
+			if p.burn {
 				b.rmPoisonIcon(u, p)
 			} else if !left[p.buff] {
 				left[p.buff] = true // 同一种毒只移除一次
@@ -349,8 +371,8 @@ func (b *battle) roundEnd(u *unit) {
 		}
 	}
 	if k := u.tal(famShenSi); k != nil && u.alive() && b.round%2 == 0 {
-		// 偶数回合结束时击败一名本方护法（优先携死亡技）：本方全体回复亡者 a% 当前生命，
-		// 敌方全体受到亡者 b% 攻击力的土属性伤害。
+		// 偶数回合结束时击败一名本方护法（优先携死亡技）：本方全体回复亡者 b% 当前生命，
+		// 敌方全体受到亡者 a% 攻击力的土属性伤害。
 		// 选人（FAQ）：优先带死亡技的（多个按战位顺序），没有则随机；死过一次的护法视作不具备死亡技。
 		// 回复 / 伤害按亡者的当前生命、当前攻击。
 		var mates, doomed []*unit
@@ -377,11 +399,11 @@ func (b *battle) roundEnd(u *unit) {
 				allies, foes := b.allies(u), b.foes(u)
 				b.show(u, k.id, allies...)
 				for _, x := range allies {
-					b.heal(x, k.id, k.tjBoost(hp*int64(k.param(0))/100))
+					b.heal(x, k.id, k.tjBoost(hp*int64(k.param(1))/100)) // 回复 = 亡者 b% 当前生命
 				}
 				b.show(u, k.id, foes...)
 				for _, x := range foes {
-					b.propertyHurt(u, x, k.id, k.tjBoost(att*int64(k.param(1))/100), 1)
+					b.propertyHurt(u, x, k.id, k.tjBoost(att*int64(k.param(0))/100), 1) // 伤害 = 亡者 a% 攻击
 				}
 			}
 		}
@@ -395,6 +417,7 @@ func (b *battle) roundEnd(u *unit) {
 	if k := u.tal(famFeiXian); k != nil && u.alive() {
 		b.feixian(u, k)
 	}
+	b.qjRoundEnd(u) // 取经首领：救活队友
 	b.doomTick(u)
 }
 
@@ -419,7 +442,6 @@ func (b *battle) clearPoison(t *unit) {
 			b.rmPoisonIcon(t, p)
 		}
 		t.poison = nil
-		b.burnIcon(t)
 	}
 }
 
@@ -442,6 +464,9 @@ func (b *battle) rampage(u *unit) {
 		b.setStatus(u, stImmune, 0, 1, false, 5321, slotBuff) // 官方战报：暴走后 BUFF 5321「无敌」
 		for _, p := range k.Param[1:] {
 			b.grant(u, int32(p))
+		}
+		if b.factor(LxRampage) {
+			b.changeAtt(u, k.id, u.baseAtt*int64(LxFactorPct[LxRampage])/100) // 裂隙「暴」：暴走后再加 100% 初始攻击
 		}
 		b.rampageTJ(u, k)
 	}
@@ -485,10 +510,9 @@ func (b *battle) rampageTJ(u *unit, k *talent) {
 			if d := c.att - c.baseAtt; d > 0 {
 				b.changeAtt(u, m.id, int64(float64(d)*m.tjX()/100))
 			}
-			if d := c.maxHP - int64(c.MaxHP); d > 0 {
+			if d := c.maxHP - c.baseHP; d > 0 {
 				g := int64(float64(d) * m.tjX() / 100)
-				b.changeMaxHP(u, m.id, g)
-				b.heal(u, m.id, g)
+				b.growAndHeal(u, m.id, g)
 			}
 		}
 	}
@@ -548,8 +572,12 @@ func (b *battle) feixian(u *unit, k *talent) {
 		}
 	}
 	var enterers, pool []*unit
-	allies := b.allies(u)
-	for _, x := range allies {
+	var allies []*unit
+	for _, x := range b.allies(u) {
+		if x == u { // 飞仙只能让其他友方护法获得增益并遁入，不能选自己。
+			continue
+		}
+		allies = append(allies, x)
 		if hasAny(x, enterFamilies) {
 			enterers = append(enterers, x)
 		}
@@ -569,21 +597,25 @@ func (b *battle) feixian(u *unit, k *talent) {
 	}
 	b.show(u, k.id, u)
 	pw, hu := int32(k.param(3)), int32(k.param(4))
-	up := b.shenli(low, pw, int64(pw-5200)*3) // 神之力：遁入后阵时随回后阵清除
+	b.shenli(low, pw, int64(pw-5200)*3) // 神之力：遁入后阵时随回后阵清除
 	grow := low.maxHP * int64(hu-5210) * 3 / 100
 	b.buff(low, hu, maxRounds)
-	b.changeMaxHP(low, hu, grow)
-	b.heal(low, hu, grow)
+	b.growAndHeal(low, hu, grow)
+	// 换位重置前快照整份额外增益，包含已有加成及物理、法术结界。
+	extraAtt := max(low.att-low.baseAtt, 0)
+	extraHP := max(low.maxHP-low.baseHP, 0)
+	shield, mshield := low.shield, low.mshield
 	if to := b.dunruTarget(u.side); to != nil {
 		low.dunru = true
 		b.swap(low, to) // 回后阵：神之力清除、攻击 / 生命上限重置、图标去掉（benchReset）
 		if front := b.allies(u); k.tjOn() && len(front) > 0 {
 			n := int64(len(front))
 			for _, x := range front {
-				b.changeAtt(x, k.id, int64(float64(up)*k.tjX()/100)/n)
-				g := int64(float64(grow)*k.tjX()/100) / n
-				b.changeMaxHP(x, k.id, g)
-				b.heal(x, k.id, g)
+				b.changeAtt(x, k.id, int64(float64(extraAtt)*k.tjX()/100)/n)
+				g := int64(float64(extraHP)*k.tjX()/100) / n
+				b.growAndHeal(x, k.id, g)
+				b.addShield(x, int64(float64(shield)*k.tjX()/100)/n, false)
+				b.addShield(x, int64(float64(mshield)*k.tjX()/100)/n, true)
 			}
 		}
 	} else {
@@ -658,6 +690,8 @@ func (b *battle) onShuiZhiXing(u *unit, k *talent) {
 	}
 	switch {
 	case len(higher) > 0:
+		sortByAtt(higher)
+		higher = higher[:1] // 只吸对位三体里攻击最高的那一个（FAQ「优先选择…攻击力最高的护法进行吸取」）
 		b.show(u, k.id, higher...)
 		for _, x := range higher {
 			d := x.att*int64(k.param(0))/100 + int64(float64(x.att)*k.tjY()/100)
@@ -670,7 +704,7 @@ func (b *battle) onShuiZhiXing(u *unit, k *talent) {
 		b.grantRound(u, int32(k.param(4)))
 	case len(opp) > 0:
 		b.show(u, k.id, u)
-		b.buff(u, int32(k.param(2)), 1)
+		b.applyBuff(u, u, int32(k.param(2)))
 		b.grantRound(u, int32(k.param(5)))
 		b.grantRound(u, int32(k.param(6)))
 		if k.tjOn() {
@@ -683,13 +717,13 @@ func (b *battle) onShuiZhiXing(u *unit, k *talent) {
 func (b *battle) onBiZhen(u *unit, k *talent) {
 	// 回合开始 a% 概率治疗生命最少的友方 b%；目标濒危（< 25%，估计）且有入阵技时 c% 概率与后场护法换位。
 	// 官方战报：ACT_DO 指向自己，ADD_HP 给目标，随后 MOVE（目标退到后阵，后阵补上）。
-	if x := b.mostHurt(u.side); x != nil {
+	if x := b.mostHurtExcept(u); x != nil {
 		// 濒危在回血之前判断（官方：羲和 14% → 回血后 39% 照样换位）
 		endangered := x.hp*100 < x.maxHP*25
 		b.show(u, k.id, u)
 		b.heal(x, k.id, x.maxHP*int64(k.param(1))/100+int64(float64(x.maxHP)*k.tjX()/100))
-		if x.alive() && x.front() && endangered && hasAny(x, enterFamilies) && b.chance(k.param(2)) {
-			if bn := b.bench(u.side); len(bn) > 0 {
+		if x.alive() && x.front() && endangered && hasAny(x, enterFamilies) && b.chance(k.param(2)+int(k.tjY())) { // 激发：换位概率 +$y%
+			if bn := b.benchForSwap(u.side); len(bn) > 0 {
 				b.swap(x, bn[b.rng.IntN(len(bn))])
 			}
 		}
@@ -698,19 +732,24 @@ func (b *battle) onBiZhen(u *unit, k *talent) {
 
 // onJinHua：回合开始——进化。
 func (b *battle) onJinHua(u *unit, k *talent) {
-	if o := b.opposite(u); o != nil {
-		if u.att < o.att && b.chance(k.param(0)) {
+	// 「攻击力 / 生命上限低于对面三位护法中任一」（talent.csv 描述）：对面三位 = facing3
+	var lowAtt, lowHP bool
+	for _, o := range b.facing3(u) {
+		lowAtt = lowAtt || u.att < o.att
+		lowHP = lowHP || u.maxHP < o.maxHP
+	}
+	{
+		if lowAtt && b.chance(k.param(0)) {
 			b.show(u, k.id, u)
 			b.changeAtt(u, k.id, k.tjBoost(u.baseAtt*int64(k.param(1))/100)) // 抓包：初始攻击 × b%
 			if k.tjOn() && b.chance(int(k.tjY())) {
 				u.spd++
 			}
 		}
-		if u.maxHP < o.maxHP && b.chance(k.param(0)) {
+		if lowHP && b.chance(k.param(0)) {
 			b.show(u, k.id, u)
 			grow := k.tjBoost(u.maxHP * int64(k.param(1)) / 100)
-			b.changeMaxHP(u, k.id, grow)
-			b.heal(u, k.id, grow)
+			b.growAndHeal(u, k.id, grow)
 		}
 	}
 }
@@ -726,6 +765,9 @@ func (b *battle) onYuanXing(u *unit, k *talent) {
 		var sum int64
 		var drained [][2]int64
 		for _, x := range adj {
+			if x.yuanxingActive {
+				continue // 已经发动元形的邻位不参与本次吸收和属性转化。
+			}
 			n := max(min(x.hp*int64(k.param(0))/100, x.hp-1), 0)
 			sum += n
 			if k.tjOn() && b.chance(k.tjPct()) { // 激发：不扣邻位的血也照样转化
@@ -746,15 +788,15 @@ func (b *battle) onYuanXing(u *unit, k *talent) {
 		sum += b.moyu(u)
 		b.changeAtt(u, k.id, sum*int64(k.param(1))/100)
 		grow := sum * int64(k.param(2)) / 100
-		b.changeMaxHP(u, k.id, grow)
-		b.heal(u, k.id, grow)
+		b.growAndHeal(u, k.id, grow)
+		u.yuanxingActive = true
 		b.buff(u, yuanxingBuff, 13)
 	}
 }
 
 // onFengMo：回合开始——疯魔。
 func (b *battle) onFengMo(u *unit, k *talent) {
-	n := min(int64(u.MaxHP)*int64(k.param(1))/100, u.hp-1)
+	n := min(u.baseHP*int64(k.param(1))/100, u.hp-1)
 	if n > 0 {
 		b.show(u, k.id, u)
 		if !k.tjOn() || !b.chance(k.tjPct()) {
@@ -785,13 +827,15 @@ func (b *battle) onMingShuYouWo(u *unit, k *talent) {
 				dead++
 			}
 		}
-		dead = min(dead, k.param(2))
-		n := int64(dead*k.param(0))*t.maxHP/100 + int64((maxRounds-b.round)*k.param(1))*t.att/100
+		counted := min(dead, k.param(2))
+		n := int64(counted*k.param(0))*t.maxHP/100 + int64((maxRounds-b.round)*k.param(1))*t.att/100
+		n = min(n, u.maxHP*3) // 单次伤害不超过崔判官当前上限 300%（FAQ）
 		if n > 0 {
 			b.show(u, k.id, t)
 			b.propertyHurt(u, t, k.id, n, 1)
+			// 激发：死亡数按实际（不封顶），单次降攻不超过崔判官当前攻击 50%（FAQ）
 			if k.tjOn() && dead >= b.round-1 && t.alive() {
-				b.changeAtt(t, k.id, -int64(float64(t.att)*k.tjX()/100))
+				b.changeAtt(t, k.id, -min(int64(float64(t.att)*k.tjX()/100), u.att/2))
 			}
 		}
 	}
@@ -815,6 +859,7 @@ func (b *battle) onDingTouQiJian(u *unit, k *talent) {
 				b.changeAtt(t, k.id, -int64(float64(t.att)*k.tjParam(2)/100))
 			}
 			hp := t.hp
+			b.noJianRen = true // 钉头箭不触发坚韧、护盾（FAQ；护盾只在普攻里判定）
 			got := b.hurt(u, t, k.id, n, true)
 			bonus = 0
 			if got < n && got < hp {

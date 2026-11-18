@@ -108,41 +108,68 @@ func TestDoubleYuBing(t *testing.T) {
 		setParam(k, 0, 100)
 	}
 	b := faqBattle(u, x)
-	one := u.atkBase() * int64(u.tals[famYuBing].param(1)) / 100 // 主条目一个的加值
+	one := u.baseAtt * int64(u.tals[famYuBing].param(1)) / 100 // 主条目一个的加值（初始攻击基准）
 	b.beforeAttack(u, x)
 	if len(u.talAll(famYuBing)) != 2 || u.fired[famYuBing] <= one {
 		t.Fatalf("yubing fired %d, single %d", u.fired[famYuBing], one)
 	}
 }
 
-// TestDunrangLeftToRight：遁让与后阵从左到右第一个存活护法交换；雷影庇护代承时跳过雷震子本人。
-func TestDunrangLeftToRight(t *testing.T) {
+// 同档固定按站位顺序，雷影庇护共用相同规则。
+func TestDunrangRandom(t *testing.T) {
 	u := newUnit(fu(1, 10, 1000, 1, levelID(famDunRang, 10)), 0)
 	lei := newUnit(fu(6, 10, 100000, 1, levelID(famLeiYingBiHu, 4)), 0)
 	b7 := newUnit(fu(7, 10, 1000, 1), 0)
 	b8 := newUnit(fu(8, 10, 1000, 1), 0)
 	src := newUnit(fu(101, 10, 1000, 1), 1)
 	b := faqBattle(u, b8, lei, b7, src)
-	if to := b.dunrangTo(0, nil); to != lei {
-		t.Fatalf("dunrang picked slot %d, want 6", to.slot())
+	seen := map[*unit]bool{}
+	for i := 0; i < 60; i++ {
+		if to := b.dunrangTo(0); to == nil || to == u {
+			t.Fatalf("dunrang picked %v", to)
+		} else {
+			seen[to] = true
+		}
 	}
-	if !b.leiying(src, u, 5000, true) || u.front() || !b7.front() {
-		t.Fatalf("leiying swap: u front %v, slot-7 front %v", u.front(), b7.front())
+	if len(seen) != 2 || seen[lei] {
+		t.Fatalf("雷震子 should stay back while other bench units exist: %v", seen)
+	}
+	// 只有雷震子一名可用后阵时才选他。
+	b7.hp, b8.hp = 0, 0
+	if b.dunrangTo(0) != lei {
+		t.Fatal("雷震子 must be picked when he is the only bench unit")
+	}
+	// 雷影庇护代承后，只有一名后阵可用时就换上该护法。
+	for i := 0; i < 40; i++ {
+		u2 := newUnit(fu(1, 10, 1000, 1, levelID(famDunRang, 10)), 0)
+		lei2 := newUnit(fu(6, 10, 100000, 1, levelID(famLeiYingBiHu, 4)), 0)
+		src2 := newUnit(fu(101, 10, 1000, 1), 1)
+		b2 := faqBattle(u2, lei2, src2)
+		if !b2.leiying(src2, u2, 5000, true) || u2.front() || !lei2.front() || lei2.leiying != 1 {
+			t.Fatalf("leiying swap: u front %v lei front %v", u2.front(), lei2.front())
+		}
 	}
 }
 
 // TestRampageOnRevive：带暴走神通的护法被复活后当场暴走，本回合无敌（到回合结束清除），不等下回合。
 func TestRampageOnRevive(t *testing.T) {
-	u := newUnit(raced(fu(1, 100, 1000, 1, levelID(famBuQu, 4)), raceBeast), 0)
-	b := faqBattle(u, newUnit(fu(101, 10, 1000, 1), 1))
-	u.hp = 0
-	b.relive(u, 1, 500)
-	if !u.raged || !b.invincible(u) {
-		t.Fatalf("raged %v invincible %v", u.raged, b.invincible(u))
-	}
-	b.tickStatus(u, false) // 回合结束
-	if b.invincible(u) {
-		t.Fatal("immune should end with the round")
+	for _, pos := range []int{1, 6} {
+		u := newUnit(raced(fu(pos, 100, 1000, 1, levelID(famBuQu, 4)), raceBeast), 0)
+		b := faqBattle(u, newUnit(fu(101, 10, 1000, 1), 1))
+		for attempt := range 2 {
+			u.hp = 0
+			b.w.b = nil
+			b.relive(u, 1, u.maxHP)
+			cmds := mustDecode(t, b.w.b)
+			if !u.raged || !b.invincible(u) || len(cmds) < 2 || cmds[0].ID != CmdRelive ||
+				cmds[1].ID != CmdActDo || cmds[1].Magic != int64(levelID(famBuQu, 4)) {
+				t.Fatalf("position %d revival %d: expected immediate rampage, got %+v", pos, attempt+1, cmds)
+			}
+			b.tickStatus(u, false)
+			if b.invincible(u) {
+				t.Fatal("immune should end with the round")
+			}
+		}
 	}
 }
 
@@ -186,5 +213,36 @@ func TestChongFengTempCleared(t *testing.T) {
 	b2.swap(bn, v)
 	if v.att != 3000 {
 		t.Fatalf("re-enter att %d, want 3000", v.att)
+	}
+}
+
+// TestCangJianYuHua：藏剑于花（回合开始 & 天将受击）只把仙剑分配给前阵己方护法；
+// 携带藏剑于花的护法攻击后，前阵所有护法携带的仙剑按各自持剑者 50% 攻击力造成 1 次伤害，且其他前阵护法的仙剑不消散清零。
+func TestCangJianYuHua(t *testing.T) {
+	u := newUnit(tjf(fu(1, 1000, 100000, 1, levelID(famCangJianYuHua, 4)), 5), 0)
+	ally := newUnit(fu(2, 2000, 100000, 1), 0)
+	bench := newUnit(fu(6, 3000, 100000, 1), 0)
+	foe := newUnit(fu(101, 100, 1000000, 1), 1)
+	b := faqBattle(u, ally, bench, foe)
+	for i := 0; i < 30; i++ {
+		u.swords, ally.swords, bench.swords = 0, 0, 0
+		b.roundStart(u)
+		b.onHit(foe, u, 100, atkMain)
+		if bench.swords != 0 {
+			t.Fatalf("bench unit got %d swords from 藏剑于花", bench.swords)
+		}
+	}
+
+	u.swords, u.swordKind, u.swordSet = 1, 0, true
+	ally.swords, ally.swordKind, ally.swordSet = 2, 0, true // 前阵队友带 2 柄道剑（每柄 2000/2 = 1000 伤害）
+	bench.swords, bench.swordKind, bench.swordSet = 3, 0, true
+	hp0 := foe.hp
+	b.attackAction(u, foe, 100, atkMain)
+	// u 普攻 1000 + u 自身 1 柄剑 500 + 前阵队友 ally 的 2 柄仙剑 2×1000 = 3500（后阵 bench 的剑不出手），且两人仙剑均不消失
+	if got := hp0 - foe.hp; got != 1000+500+2*1000 {
+		t.Fatalf("foe took %d, want 3500", got)
+	}
+	if u.swords != 1 || ally.swords != 2 {
+		t.Fatalf("swords u=%d ally=%d, want 1 and 2 (must not disappear after attack)", u.swords, ally.swords)
 	}
 }

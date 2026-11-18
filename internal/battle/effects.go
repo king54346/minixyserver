@@ -60,13 +60,25 @@ func (b *battle) show(owner *unit, id int32, targets ...*unit) {
 	}
 }
 
+// Opening race auras are passive stat changes. The shipped client maps Xianshi
+// and the other race auras to magic_90.plist, which is absent from the
+// APK. An ACT_DO attempts to parse that missing plist in native CCDictMaker,
+// causing a null-pointer crash before Lua can handle the failure. Keep the
+// activation statistics and all HP commands, without an active-cast animation.
+func (b *battle) passiveAura(owner *unit, id int32) {
+	b.actor = owner
+	if ti := gamedata.Talents[id]; ti != nil {
+		b.skills[ti.Family]++
+	}
+}
+
 // hurt 让 t 掉血并输出 SUB_HP；physical 为物理伤害（结界分开抵消）。返回实际扣血。
 //
 // 生命流失（loseHP，图鉴 FAQ：化血 / 哗兵 / 生死别…）「不属于伤害」：不触发与伤害相关的神通（蓄力、坚韧、
 // 气甲、月之暗面、返璞归真、雷影庇护…），不被物理 / 法术结界抵消，无敌 / 暴走 / 诈死也挡不住。
 func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int64 {
-	pierce, fixed := b.pierce, b.fixedHit
-	b.pierce, b.fixedHit = false, false // 只管这一下：之后触发的死亡技等是普通伤害
+	pierce, fixed, noJianRen := b.pierce, b.fixedHit, b.noJianRen
+	b.pierce, b.fixedHit, b.noJianRen = false, false, false // 只管这一下：之后触发的死亡技等是普通伤害
 	var dealt int64
 	defer func() { b.lastDealt = dealt }() // 放在最后：扣血引发的死亡技等嵌套 hurt 不覆盖
 	if !t.alive() || n < 0 {
@@ -74,6 +86,10 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 	}
 	if pierce {
 		physical = false
+	}
+	// 脱帽退敌按受击前的蓄力减免所有伤害，生命流失和守卫的固定一点除外。
+	if k := t.tal(famTuoMaoTuiDi); k != nil && !pierce && !fixed && src != t && t.charge > 0 {
+		n -= n * int64(min(t.charge*k.param(0), 80)) / 100
 	}
 	if src != nil && src != t && src.side != t.side && !pierce {
 		// 蓄力：受到敌方任何伤害（普攻、法术、神通）都 +1，ADD_POWER 在扣血之前（官方战报：不灭法身等在
@@ -94,6 +110,10 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 	}
 	if src != nil && src.side != t.side && !fixed {
 		n = scale(n, src.lead.dmg, t.lead.res) // 队长技：伤害 / 伤害抗性
+		if b.qjRace > 0 && src.Race != b.qjRace {
+			n /= 2 // 取经特殊关：非指定种族护法伤害减半
+		}
+		n = qjVuln(src, t, n) // 取经：来自某族的伤害变为 a%
 	}
 	if !pierce && !fixed {
 		n = b.zfAdjust(src, t, n, physical) // 阵法：阵眼存活时的固定伤害加减，在其他减伤、护盾之前（zhenfa.go）
@@ -101,7 +121,7 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 	if src != t && n > 0 && !pierce && !b.invincible(t) && b.leiying(src, t, n, physical) {
 		return 0 // 雷影庇护：雷震子代承，先于坚韧、气甲等判定
 	}
-	if k := t.tal(famJianRen); k != nil && src != t && n > 0 && !pierce && b.chance(k.param(0)) {
+	if k := t.tal(famJianRen); k != nil && src != t && n > 0 && !pierce && !noJianRen && b.chance(k.param(0)) {
 		// 坚韧：受到任何伤害（不只普攻）时 a% 概率提升 b% 当前攻击力并减少等量伤害。
 		// 官方战报：神通 / 属性伤害打到带坚韧的护法同样触发，演出在扣血之前。
 		up := t.att * int64(k.param(1)) / 100
@@ -112,8 +132,7 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 		}
 		if k.tjOn() { // 激发：增加 $x% 上限并回复同量（官方战报：坚韧后 CHG_MAXHP + ADD_HP）
 			g := int64(float64(t.maxHP) * k.tjX() / 100)
-			b.changeMaxHP(t, k.id, g)
-			b.heal(t, k.id, g)
+			b.growAndHeal(t, k.id, g)
 		}
 	}
 	if src != t && n > 0 && !pierce {
@@ -122,6 +141,13 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 			return 0
 		}
 	}
+	// 转移伤害、反伤及死亡技可能在嵌套结算中杀死本次受击者。
+	if !t.alive() {
+		return 0
+	}
+	if physical && b.factor(LxPhys) && !fixed && src != t {
+		n = n * int64(100-LxFactorPct[LxPhys]) / 100 // 裂隙「物」：受到的物理伤害减少 20%
+	}
 	if physical && t.hurtUp > 0 && !fixed {
 		n = n * int64(100+t.hurtUp) / 100
 	}
@@ -129,6 +155,9 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 	if k := t.tal(famQiJia); k != nil && physical && src != t && n > t.maxHP*int64(k.param(1))/100 {
 		n = t.maxHP * int64(k.param(1)) / 100 // 气甲：所有物理伤害（含挥扫、分击、反伤等非攻击行为）不超过上限 b%
 		qijia = k
+	}
+	if k := t.tal(famZhaSi); k != nil && k.tjOn() && src != t && !pierce && n > 0 && t.has(stZhasi) != nil {
+		b.addShield(t, int64(float64(n)*k.tjX()/100), false) // 诈死激发：生效后受到的伤害，其值 $x% 转为物理结界
 	}
 	if src != t && !pierce && b.invincible(t) {
 		// 无敌 / 暴走 / 诈死后本回合：伤害照常计算（坚韧、护盾、逆势、蓄力等照常触发），只是不扣血；
@@ -178,8 +207,28 @@ func (b *battle) hurt(src *unit, t *unit, id int32, n int64, physical bool) int6
 			}
 		}()
 	}
-	b.hpCmd(CmdSubHP, id, t, n)
+	if t.hard > 0 && (!pierce || t.hardAll) && n > 1 && b.chance(t.hard) {
+		n = 1 // 取经坚硬：只扣 1 点（坚硬10 不含生命流失，BOSS-坚硬 含）
+	}
+	// 显示值：只有「伤害超过目标剩余血量」这一种截断才发真实伤害（dealt），避免几千攻击只飘几百的数字。
+	// 减伤 / 护盾 / 气甲都已算进 dealt；坚硬把 n 改成 1 时 n != t.hp，仍按实际扣血显示。
+	show := n
+	if dealt > n && n == t.hp { // 致死一击：客户端飘字用真实伤害，扣血仍按 n
+		show = dealt
+	}
+	b.hpCmd(CmdSubHP, id, t, show)
 	t.hp -= n
+	if src != nil && src.side != t.side && n > 0 {
+		b.hits[src.side]++
+	}
+	if t.alive() && n > 0 {
+		b.qjSplit(t) // 取经孙悟空：分裂
+	}
+	if b.qjHitDeath > 0 && src != nil && src != t && n > 0 && t.alive() {
+		if t.hitsTaken++; t.hitsTaken >= b.qjHitDeath { // 取经特殊关：受到 N 次伤害立即死亡
+			defer b.loseHP(src, t, 0, t.hp)
+		}
+	}
 	if !t.alive() {
 		b.w.u8(CmdDie)
 		b.w.u8(1)
@@ -202,12 +251,16 @@ func (b *battle) destroy(src, t *unit, id int32) {
 		b.show(t, k.id, t) // 不灭：a% 概率不受霆威 / 摧毁的秒杀效果影响
 		return
 	}
+	if k := t.tal(famJinShenBoss); k != nil && b.chance(k.param(0)) {
+		b.show(t, k.id, t)
+		return
+	}
 	b.loseHP(src, t, id, t.hp)
 }
 
 // pctLoss 是按目标上限百分比扣血的量（失血、蚕食）；带「不灭」的首领改按星级 × 500 扣。
 func pctLoss(t *unit, pct int64) int64 {
-	if t.tal(famBuMieBoss) != nil {
+	if t.tal(famBuMieBoss) != nil || t.tal(famJinShenBoss) != nil {
 		star := 5
 		if pi := gamedata.Pets[t.Icon]; pi != nil && pi.Star > 0 {
 			star = pi.Star
@@ -240,6 +293,9 @@ func (b *battle) heal(t *unit, id int32, n int64) int64 {
 	n = scale(n, t.lead.healin, 0) // 队长技：被治疗效果
 	if h := b.actor; h != nil && h.side == t.side {
 		n = scale(n, h.lead.healout, 0) // 队长技：回复效果
+	}
+	if over := n - (t.maxHP - t.hp); over > 0 {
+		defer b.qjOverflow(t, over) // 取经「溢出」：溢出的治疗让敌方流失生命
 	}
 	n = min(n, t.maxHP-t.hp)
 	if n <= 0 {
@@ -285,9 +341,13 @@ func (b *battle) changeAtt(t *unit, id int32, delta int64) int64 {
 // 上限降到当前生命以下时，超出的生命随后用 SUB_HP（同一个号）扣掉：客户端处理 CHG_MAXHP 只改上限、不动当前生命
 // （war/object.lua changeMaxHP），不补这一条血条就停在旧值。官方战报（session-02 lundao:211 破妄）：
 // CHG_MAXHP op 2 之后紧跟 SUB_HP(破妄, 超出部分)；当前生命本来就低于新上限的不扣。
-func (b *battle) changeMaxHP(t *unit, id int32, delta int64) {
-	if delta < 0 && t.huweiFloor > 0 && t.alive() { // 狐尾：生命上限减益时最少保留初始上限的 floor%
-		delta = -min(-delta, max(t.maxHP-int64(t.MaxHP)*int64(t.huweiFloor)/100, 0))
+// Returns the signed change applied after the cap and any minimum-HP limit.
+func (b *battle) changeMaxHP(t *unit, id int32, delta int64) int64 {
+	if delta > 0 {
+		delta = min(delta, max(t.baseHP*8-t.maxHP, 0))
+	}
+	if delta < 0 && t.huweiFloor > 0 && t.alive() { // 狐尾：保留线在施加时快照，期间增减上限不重新计算。
+		delta = -min(-delta, max(t.maxHP-t.huweiFloor, 0))
 	}
 	op, n := 1, delta
 	if delta < 0 {
@@ -297,7 +357,7 @@ func (b *battle) changeMaxHP(t *unit, id int32, delta int64) {
 		t.maxHP += n
 	}
 	if n <= 0 {
-		return
+		return 0
 	}
 	b.w.u8(CmdChgMaxHP)
 	b.w.u32(int64(id))
@@ -308,6 +368,17 @@ func (b *battle) changeMaxHP(t *unit, id int32, delta int64) {
 	if over := t.hp - t.maxHP; over > 0 {
 		t.hp = t.maxHP
 		b.hpCmd(CmdSubHP, id, t, over)
+	}
+	if op == 2 {
+		return -n
+	}
+	return n
+}
+
+// growAndHeal ties the accompanying heal to the max-HP increase that fits.
+func (b *battle) growAndHeal(t *unit, id int32, growth int64) {
+	if added := b.changeMaxHP(t, id, growth); added > 0 {
+		b.heal(t, id, added)
 	}
 }
 
@@ -372,12 +443,24 @@ func (b *battle) buff(t *unit, id int32, last int) {
 		b.w.u8(t.Pos)
 		b.w.u8(slot)
 	}
+	b.buffCmd(t, id, slot, last)
+}
+
+// buffCmd 写一条 BUFF（id 挂在 t 的 slot 槽位上，持续 last 回合）。
+func (b *battle) buffCmd(t *unit, id int32, slot, last int) {
 	b.w.u8(CmdBuff)
 	b.w.u32(int64(id))
 	b.w.u8(1)
 	b.w.u8(t.Pos)
 	b.w.u8(slot)
 	b.w.u8(last)
+}
+
+// rmSlot 去掉 t 的 slot 槽位上的 BUFF（燃烧层这类不按 id 记的槽位）。
+func (b *battle) rmSlot(t *unit, slot int) {
+	b.w.u8(CmdRmBuff)
+	b.w.u8(t.Pos)
+	b.w.u8(slot)
 }
 
 // rmBuff 移除 t 身上的 buff id（没挂过就不发）。

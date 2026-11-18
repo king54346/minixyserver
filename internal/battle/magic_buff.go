@@ -37,7 +37,8 @@ func (b *battle) magicBuff(u, t *unit, c *castable) {
 	if c.Buff == 0 || !t.alive() {
 		return
 	}
-	if rate := c.BuffRate[0] + c.BuffRate[1]*float64(c.lv); rate > 0 && b.chance(int(rate)) {
+	// 几率按客户端说明 buff_rate(等级 − 1)（magic_mgr.lua buff_rate_val），原来按等级算，比界面上写的高一级
+	if rate := c.BuffRate[0] + c.BuffRate[1]*float64(c.lv-1); rate > 0 && b.chance(int(rate)) {
 		if fam := buffFamily(c.Buff); fam >= 5649 && fam <= 5651 { // 火附魔：转化比例与法术等级有关
 			a := int64(0)
 			if info := gamedata.Buffs[c.Buff]; info != nil {
@@ -137,8 +138,7 @@ func (b *battle) applyBuff(u, t *unit, id int32) {
 		b.shenli(t, id, a)
 	case 5211: // 神之护
 		g := t.maxHP * a / 100
-		b.changeMaxHP(t, id, g)
-		b.heal(t, id, g)
+		b.growAndHeal(t, id, g)
 		b.buff(t, id, maxRounds)
 	case 5231:
 		debuff(stBind, 0, 1, true)
@@ -154,6 +154,8 @@ func (b *battle) applyBuff(u, t *unit, id int32) {
 		if foe && debuff(stTaunt, a, 1, true) {
 			t.status[stTaunt].src = u
 		}
+	case 5631:
+		b.setStatus(t, stGhostAxe, a*10, 1, false, id, slotBuff)
 	case 5649, 5650, 5651:
 		b.buff(t, id, maxRounds)
 	}

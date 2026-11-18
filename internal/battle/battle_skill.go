@@ -35,7 +35,11 @@ func magicPower(u *unit, star int) int64 {
 // 按概率触发」的施放（在普攻之前额外出手），每次行动最多施放一个。
 func (b *battle) castMagic(u *unit) {
 	for _, c := range u.magics {
-		if c.left > 0 && b.zy[u.side] >= c.CondZY && c.roundOK(b.round) && b.chance(c.Rate+c.bonus) {
+		rate := c.Rate + c.bonus
+		if b.factor(LxMagic) {
+			rate *= 2 // 裂隙「法」：施法几率双倍
+		}
+		if c.left > 0 && b.zy[u.side] >= c.CondZY && c.roundOK(b.round) && b.chance(rate) {
 			b.cast(u, c)
 			return
 		}
@@ -73,15 +77,28 @@ func (b *battle) cast(u *unit, c *castable) []*unit {
 	}
 	amount := magicPower(u, m.Star) * int64(m.Hurt[0]+m.Hurt[1]*lv) / 1000
 	for _, t := range targets {
+		deaths := t.deaths
+		pendingIce := false
 		// 负面状态先于伤害结算（用户规则）：法术附带的 buff、精修 buff 在扣血之前挂上——这一下打死目标时，
 		// 锢魂之类照样生效（不会被神佑等复活）。复生法术的目标是死者，复活后再挂。
 		if sp != 5 && t.alive() {
-			b.magicBuff(u, t, c)
-			b.jingxiu(u, t, c)
+			if c.Buff == talangIceBuff {
+				rate := c.BuffRate[0] + c.BuffRate[1]*float64(c.lv-1)
+				pendingIce = b.chance(int(rate)) && !b.resist(t, stStiff)
+			} else {
+				b.magicBuff(u, t, c)
+			}
+			if c.JXBuff == talangIceBuff {
+				if c.jx > 0 && b.chance(c.jx*10) && !b.resist(t, stStiff) {
+					pendingIce = true
+				}
+			} else {
+				b.jingxiu(u, t, c)
+			}
 		}
 		switch {
 		case sp == 5: // 复生
-			b.relive(t, id, t.maxHP*spVal/100)
+			b.reliveInitial(t, id, int(spVal))
 			continue
 		case amount > 0 && m.Kind == 5:
 			b.heal(t, id, amount)
@@ -97,16 +114,22 @@ func (b *battle) cast(u *unit, c *castable) []*unit {
 					b.show(x, attackGuard, x)
 					if k.tjOn() {
 						g := int64(float64(x.maxHP) * k.tjX() / 100)
-						b.changeMaxHP(x, k.id, g)
-						b.heal(x, k.id, g)
+						b.growAndHeal(x, k.id, g)
 					}
 					break
 				}
 			}
 			b.propertyHurt(u, victim, id, amount-amount*cut/100, m.Kind)
 			if victim != t && t.alive() {
-				b.propertyHurt(u, t, id, 1, m.Kind) // 救援：原目标一同受到此次攻击，仍受 1 点属性伤害（FAQ）
+				// 救援：原目标一同受到此次攻击，仍受 1 点属性伤害（FAQ）。固定 1 点，不经阵法的固定加伤等（原来阵法加成把这 1 点变成 241，）
+				b.fixedHit = true
+				b.propertyHurt(u, t, id, 1, m.Kind)
+				b.fixedHit = false
 			}
+		}
+		// 同一次法术受击的润泽先完成，冰封不会取消这一次受击反应。
+		if pendingIce && t.alive() && t.deaths == deaths {
+			b.setEnemyStatus(t, stStiff, 0, 1, true, talangIceBuff, slotDebuff)
 		}
 		if !t.alive() {
 			continue
@@ -130,7 +153,7 @@ func (b *battle) cast(u *unit, c *castable) []*unit {
 				// 官方战报（疯魔乱棍 12505）：每一下是 ACT_DO(普攻 1 → 目标) + SUB_HP(法术号)，客户端据此播连续出手
 				t := foes[b.rng.IntN(len(foes))]
 				b.show(u, attackNormal, t)
-				b.hurt(u, t, id, u.att*spVal/100, true)
+				b.propertyHurt(u, t, id, u.att*spVal/100, m.Kind)
 			}
 		}
 	}
@@ -148,7 +171,7 @@ func (b *battle) propertyHurt(u, t *unit, id int32, n int64, kind int) int64 {
 	// 遁让：属性伤害超出上限 a% 时，b% 概率与后场护法交换并躲过
 	// 遁让是免除伤害后与后阵换位：无敌时本来就不受伤，不发动
 	if k := t.tal(famDunRang); k != nil && t.front() && !b.invincible(t) && n*100 > t.maxHP*int64(k.param(0)) && b.chance(k.param(1)) {
-		if to := b.dunrangTo(t.side, nil); to != nil { // 后阵从左到右
+		if to := b.dunrangTo(t.side); to != nil { // 随机替换可用的后阵护法。
 			b.show(t, k.id, t)
 			b.swap(t, to)
 			if k.tjOn() && u != nil && u.alive() { // 遁让激发：伤害来源流失 $x% 触发值的生命（生命流失）
@@ -197,8 +220,7 @@ func (b *battle) runze(t *unit) {
 			b.show(t, r.id, t)
 			b.heal(x, r.id, t.att*int64(r.param(0))/100) // $p = a% 攻击
 			grow := x.maxHP * int64(r.param(1)) / 100
-			b.changeMaxHP(x, r.id, grow)
-			b.heal(x, r.id, grow)
+			b.growAndHeal(x, r.id, grow)
 			if r.tjOn() && b.chance(r.tjPct()) {
 				b.clearOneDebuff(x) // 激发：$x% 概率清除目标一个负面状态
 			}
@@ -223,12 +245,27 @@ func (b *battle) transform(t *unit, shape int32, race, speed int, hp int64) {
 	b.w.u8(0)
 }
 
+// Ordinary resurrection uses initial attributes. Special self-revival skills
+// retain their explicitly calculated bonuses by calling relive directly.
+func (b *battle) reliveInitial(t *unit, id int32, pct int) {
+	if t.alive() || pct <= 0 {
+		return
+	}
+	b.leaveClear(t, true)
+	b.resetInitial(t, id)
+	b.relive(t, id, t.maxHP*int64(pct)/100)
+}
+
 func (b *battle) relive(t *unit, id int32, hp int64) {
 	if t.alive() || hp <= 0 {
 		return
 	}
 	t.hp = min(hp, t.maxHP)
+	b.setCharge(t, 0)
+	t.tempAtt, t.tempBase = 0, 0
+	t.tempEpoch++
 	t.revived = true
+	t.raged = false // 每次成功复活都重新结算暴走。
 	t.reviveIn = 0
 	t.gone = false // 后阵的死者复活后回到后阵候补（之后照常补位）
 	t.fpCut = 0    // 返璞归真：被复活时复原
@@ -243,12 +280,10 @@ func (b *battle) relive(t *unit, id int32, hp int64) {
 	b.w.u8(1)
 	b.w.u8(t.Pos)
 	b.w.u32(t.hp)
-	b.zfSync(t) // 阵法：复活后按所在阵位重算固定加成
+	b.zfSync(t)  // 阵法：复活后按所在阵位重算固定加成
+	b.rampage(t) // 前后阵均在复活当下结算，无敌到当前回合结束。
 	b.reviveSkill(t)
 	b.deathSkillEvent(t)
-	if t.front() {
-		b.rampage(t) // 被复活即暴走：当回合无敌（到本回合结束），不等下回合开始（用户规则）；后阵的等补位后回合开始再判
-	}
 }
 
 // magicTargets 按 magic_mgr.lua MAGIC_DESC11 的 17 种规则选目标。
@@ -297,9 +332,9 @@ func (b *battle) magicTargets(u *unit, code int, revive bool, param []int32) []*
 	case 4:
 		return pickBy(foes, func(x, y *unit) bool { return x.att < y.att })
 	case 5:
-		return pickBy(foes, func(x, y *unit) bool { return x.Speed > y.Speed })
+		return pickBy(foes, func(x, y *unit) bool { return x.speed() > y.speed() }) // 当前先攻（含加速 / 凝滞）
 	case 6:
-		return pickBy(foes, func(x, y *unit) bool { return x.Speed < y.Speed })
+		return pickBy(foes, func(x, y *unit) bool { return x.speed() < y.speed() })
 	case 7:
 		return foes
 	case 8:
@@ -374,11 +409,15 @@ func (b *battle) spEffect(u, t *unit, id int32, sp int, spVal int64) {
 	case 8: // 换位（大鹏展翅、放下屠刀、入剑诀、狂风、风鹏正举）：a% 概率令目标与其后阵随机一名存活护法换位，
 		// 换上来的护法被捆缚（用户规则）
 		if t.front() && b.chance(int(spVal)) {
-			if bn := b.bench(t.side); len(bn) > 0 {
+			if bn := b.benchForSwap(t.side); len(bn) > 0 {
 				x := bn[b.rng.IntN(len(bn))]
 				b.swap(t, x)
 				b.bindEntered(x)
 			}
+		}
+	case 12: // 驱散（驱灾辟邪）：a% 几率移除目标身上的所有增益状态（原来没实现）
+		if b.chance(int(spVal)) {
+			b.clearAllBuffs(t)
 		}
 	case 10: // 物理结界
 		b.addShield(t, u.maxHP*spVal/100, false)

@@ -13,31 +13,33 @@ import (
 // 前阵阵亡后下回合开始时依次补位。每次行动：法术（满足概率/次数/战意时，在普攻之前额外
 // 施放）→ 攻击前神通 → 普攻（闪避、暴击、减伤、受击神通）→ 攻击后神通。
 const (
-	CmdActDo        = 3
-	CmdSubHP        = 4
-	CmdAddHP        = 5
-	CmdDie          = 6
-	CmdRelive       = 7
-	CmdBuff         = 8
-	CmdTurn         = 9
-	CmdMove         = 10
-	CmdWarStart     = 11
-	CmdWarEnd       = 12
-	CmdZhanyi       = 13
-	CmdAttChange    = 14
-	CmdRmBuff       = 17
-	CmdShield       = 18
-	CmdChgMaxHP     = 19
-	CmdAddPower     = 20 // 蓄力层数（op 1 加 2 减）
-	CmdChgFighter   = 26 // 变身：pos, 形象, 生命, 攻击, 先攻, full, 种族, power（归元火之卵）
-	CmdBloodPoolIn  = 33 // 血池蓄入：pos, 量（燃魂）
-	CmdBloodPoolAtt = 34 // 血池攻击：目标 pos, 量
-	CmdDitingCount  = 41 // 谛听计数 -1：pos（客户端头像上的返璞归真剩余次数，入阵时重置为 10）
-	CmdXiuluoCount  = 42 // 修罗点数：pos, 点数（阿修罗 / 天女魃头像上的计数）
-	CmdActionEnd    = 22
-	CmdMagicShield  = 23
-	CmdPinXue       = 27 // 回合用完拼血（无参数）
-	CmdMoveToEmpty  = 36 // 后阵补到从没人站过的空位（客户端 moveToEmpty 会重排站位表；用 MOVE 会因空位不在表里报错）
+	CmdActDo         = 3
+	CmdSubHP         = 4
+	CmdAddHP         = 5
+	CmdDie           = 6
+	CmdRelive        = 7
+	CmdBuff          = 8
+	CmdTurn          = 9
+	CmdMove          = 10
+	CmdWarStart      = 11
+	CmdWarEnd        = 12
+	CmdZhanyi        = 13
+	CmdAttChange     = 14
+	CmdRmBuff        = 17
+	CmdShield        = 18
+	CmdChgMaxHP      = 19
+	CmdAddPower      = 20 // 蓄力层数（op 1 加 2 减）
+	CmdChgFighter    = 26 // 变身：pos, 形象, 生命, 攻击, 先攻, full, 种族, power（归元火之卵）
+	CmdBloodPoolIn   = 33 // 血池蓄入：pos, 量（燃魂）
+	CmdBloodPoolAtt  = 34 // 血池攻击：目标 pos, 量
+	CmdAddTempTalent = 40 // 获得神通演出：from, to, 神通号（客户端飘出神通名）
+	CmdDitingCount   = 41 // 谛听计数 -1：pos（客户端头像上的返璞归真剩余次数，入阵时重置为 10）
+	CmdXiuluoCount   = 42 // 修罗点数：pos, 点数（阿修罗 / 天女魃头像上的计数）
+	CmdActionEnd     = 22
+	CmdMagicShield   = 23
+	CmdPinXue        = 27 // 回合用完拼血（无参数）
+	CmdPetClone      = 35 // 复制单位：from, to（取经孙悟空分裂；war/netwar.lua CClone）
+	CmdMoveToEmpty   = 36 // 后阵补到从没人站过的空位（客户端 moveToEmpty 会重排站位表；用 MOVE 会因空位不在表里报错）
 
 	// war/config.lua ATTACKTYPE_*
 	attackNormal = 1
@@ -54,26 +56,34 @@ const (
 )
 
 type battle struct {
-	units      [2][]*unit
-	zf         [2]*zfSide // 双方阵法（zhenfa.go；nil = 不用）
-	prestige   [2]int     // 双方威望（同速时威望高的先出手）
-	zy         [2]int
+	zf         [2]*zfSide   // 双方阵法（zhenfa.go；nil = 不用）
+	poolBy     [2]*unit     // 最近蓄入血池的单位与其燃魂号（演出用）
+	factors    map[int]bool // 时空裂隙战地因素（liexi.go）
 	rng        *rand.Rand
-	inTempUp   bool  // tempUp 进行中（attRaised 用）
-	fixedHit   bool  // 下一次 hurt 是固定伤害（守卫的 1 点）：不经队长技 / 阵法 / 会猎缩放
 	lastVictim *unit // 最近一次 attack 实际承受攻击的单位（守卫 / 元形代挨时是护卫者），攻击特效作用于它
-	atkDepth   int   // 攻击行为的嵌套层数（attack_action.go）
-	enterDepth int   // 换位触发入阵的嵌套层数（swap）
-	w          recordWriter
 	skills     map[string]int
-	round      int
-	actor      *unit    // 最近一次演出的单位（回复效果类队长技按它算施治者）
-	acting     *unit    // 正在行动的单位（act）：行动中被挂上的「下次行动后清除」状态留到它下次行动后
-	pierce     bool     // 本次 hurt 是生命流失：不经结界（loseHP 设置）
-	lastDealt  int64    // 上一次 hurt 的伤害值（结界抵消后、未按剩余血量截断；吸血 / 血气按它算）
+	actor      *unit              // 最近一次演出的单位（回复效果类队长技按它算施治者）
+	acting     *unit              // 正在行动的单位（act）：行动中被挂上的「下次行动后清除」状态留到它下次行动后
+	qjNPCs     map[int32]*Fighter // 取经首领变身用的怪（npc 号 → 属性已按关卡参数算好）
+	units      [2][]*unit
+	w          recordWriter
+	prestige   [2]int // 双方威望（同速时威望高的先出手）
+	zy         [2]int
 	pool       [2]int64 // 血池（燃魂失去的生命）
-	poolBy     [2]*unit // 最近蓄入血池的单位与其燃魂号（演出用）
+	hits       [2]int   // 各方造成伤害的次数（取经打魂关：打中敌人一次得一个落宝）
+	atkDepth   int      // 攻击行为的嵌套层数（attack_action.go）
+	enterDepth int      // 换位触发入阵的嵌套层数（swap）
+	round      int
+	lastDealt  int64 // 上一次 hurt 的伤害值（结界抵消后、未按剩余血量截断；吸血 / 血气按它算）
+	qjRace     int   // 取经特殊关：非该族护法伤害减半（0 = 不限）
+	qjHitDeath int   // 取经特殊关：受到这么多次伤害立即死亡（0 = 不限）
 	poolID     [2]int32
+	qjDefeated [2]bool // 取经首领带「击败」阵亡：该方的「给予神力」不再复活
+	inEnter2   bool    // 裂隙「入」第二次入阵结算中
+	inTempUp   bool    // tempUp 进行中（attRaised 用）
+	fixedHit   bool    // 下一次 hurt 是固定伤害（守卫的 1 点）：不经队长技 / 阵法 / 会猎缩放
+	pierce     bool    // 本次 hurt 是生命流失：不经结界（loseHP 设置）
+	noJianRen  bool    // 下一次 hurt 不触发坚韧（钉头七箭）
 	over       bool
 	win        bool
 }
@@ -84,8 +94,13 @@ type Result struct {
 	// ZfParam 是战报 S_FIGHT_RECORD.otherparam idx 11 的值（双方阵法，客户端显示用；没人用阵法时为空）
 	ZfParam string
 	Win     bool
+	Draw    bool // 开启DrawOnTimeout时，耗尽回合但未决胜为平局。
 	Rounds  int
 	Skills  map[string]int // 触发的神通 / 法术（按名字计数，日志用）
+	// HP 是战斗结束时双方每个单位的剩余生命，按传入 team1 / team2 的顺序（取经：护法血量带到下一场）
+	HP [2][]int64
+	// Hits 是双方各自造成伤害的次数（取经打魂关的落宝数）
+	Hits [2]int
 }
 
 // 九幽首领的护甲神通（auto/talent.lua：130234 魔甲、130235 藤甲）。
@@ -107,12 +122,20 @@ func SimulateLeaders(team1, team2 []*Fighter, leaders [2]int32, rng *rand.Rand) 
 
 // Options 是一场战斗的双方设置。
 type Options struct {
-	WarType  int      // WAR_START 的战斗类型（war/netwar.lua：0 普通、1 九幽试炼——客户端显示首领伤害面板）
-	Leaders  [2]int32 // 队长技号（0 = 无）
-	Assist   [2]int32 // 援助护法（好友 / 路人的队长）的队长技，与本方队长技同时生效（0 = 无）
-	Prestige [2]int   // 威望（S_FIGHT_RECORD.w1 / w2）：同速时威望高的一方先出手
+	DrawOnTimeout bool     // 天梯专用；其他玩法保留原拼血胜负规则。
+	WarType       int      // WAR_START 的战斗类型（war/netwar.lua：0 普通、1 九幽试炼——客户端显示首领伤害面板）
+	Leaders       [2]int32 // 队长技号（0 = 无）
+	Assist        [2]int32 // 援助护法（好友 / 路人的队长）的队长技，与本方队长技同时生效（0 = 无）
+	Prestige      [2]int   // 威望（S_FIGHT_RECORD.w1 / w2）：同速时威望高的一方先出手
 	// Formations 是双方阵法（zhenfa.go；Type 0 = 不用）
 	Formations [2]Formation
+	// Factors 是时空裂隙的战地因素（liexi.go，1–20）
+	Factors []int
+	// 取经第 7 难的特殊 AI（xymsrv/qujing.go）：QjRace 非该族（1 人 2 魔 3 仙 4 兽）护法伤害减半；
+	// QjHitDeath 所有护法受到这么多次伤害立即死亡。
+	QjRace, QjHitDeath int
+	// QjNPCs 是取经首领「变身」的目标怪（npc 号 → 战斗单位，属性按关卡参数算好）。
+	QjNPCs map[int32]*Fighter
 }
 
 // SimulateWith 按 opts 打一场。
@@ -121,7 +144,11 @@ func SimulateWith(team1, team2 []*Fighter, opts Options, rng *rand.Rand) Result 
 	if rng == nil {
 		rng = rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64()))
 	}
-	b := &battle{rng: rng, skills: map[string]int{}, prestige: opts.Prestige}
+	b := &battle{rng: rng, skills: map[string]int{}, prestige: opts.Prestige, factors: map[int]bool{}}
+	for _, f := range opts.Factors {
+		b.factors[f] = true
+	}
+	b.qjRace, b.qjHitDeath, b.qjNPCs = opts.QjRace, opts.QjHitDeath, opts.QjNPCs
 	for side, team := range [2][]*Fighter{team1, team2} {
 		for _, f := range team {
 			u := newUnit(f, side)
@@ -150,11 +177,19 @@ func SimulateWith(team1, team2 []*Fighter, opts Options, rng *rand.Rand) Result 
 	for b.round = 1; b.round <= maxRounds && !b.over; b.round++ {
 		b.playRound()
 	}
+	draw := false
 	if !b.over {
-		b.w.u8(CmdPinXue)                   // 回合用完：客户端播「拼血」（war/netwar.lua CPinXue）
-		b.finish(b.hpLeft(0) > b.hpLeft(1)) // 剩余总生命多的一方胜
+		draw = opts.DrawOnTimeout
+		b.w.u8(CmdPinXue)                            // 回合用完：客户端播「拼血」（war/netwar.lua CPinXue）
+		b.finish(!draw && b.hpLeft(0) > b.hpLeft(1)) // 非平局玩法仍按剩余总生命判胜
 	}
-	return Result{Record: b.w.b, Win: b.win, Rounds: min(b.round, maxRounds), Skills: b.skills, ZfParam: zfParam(opts.Formations)}
+	res := Result{Record: b.w.b, Win: b.win, Draw: draw, Rounds: min(b.round, maxRounds), Skills: b.skills, ZfParam: zfParam(opts.Formations), Hits: b.hits}
+	for side := range b.units {
+		for _, u := range b.units[side] {
+			res.HP[side] = append(res.HP[side], max(u.hp, 0))
+		}
+	}
+	return res
 }
 
 func (b *battle) playRound() {
@@ -167,6 +202,7 @@ func (b *battle) playRound() {
 		u.acted = false
 		b.roundStart(u)
 	}
+	b.lxRoundStart()            // 时空裂隙战地因素（liexi.go）
 	for side := range b.units { // 布剑：回合开始召剑可在后阵
 		for _, u := range b.units[side] {
 			if u.alive() && !u.front() && !u.gone {
@@ -196,6 +232,7 @@ func (b *battle) playRound() {
 	for _, u := range b.order() {
 		b.roundEnd(u)
 	}
+	b.lxRoundEnd()
 	b.zfEyeSkill() // 阵眼技：指定回合结束时（zhenfa.go）
 	// 回合制状态到期统一放在所有回合结束神通之后：回合结束时才获得的「到当前回合结束」状态（如飞仙遁入换上的
 	// 光阴碎给的无敌）也在本回合结束时消失，不再因出手顺序先后有的多留一回合；后阵护法的状态同样计时。
@@ -282,7 +319,8 @@ func (b *battle) moveUp(side int) {
 		b.w.u8(from)
 		b.w.u8(to)
 		u.Pos = to
-		b.zfSync(u) // 阵法：补上来的护法取得该阵位的固定加成
+		b.zfSync(u)  // 阵法：补上来的护法取得该阵位的固定加成
+		b.rampage(u) // 与主动换阵一致：先暴走，再触发入阵及敌方入阵反应。
 		b.enter(u)
 		// enter 中的入阵神通（如甘露）可能复活了某槽死者，同步空位表，避免同槽两人。
 		for _, x := range b.units[side] {
@@ -355,7 +393,10 @@ func (b *battle) act(u *unit) {
 	if !u.alive() || b.over {
 		return
 	}
+	preAttackDone := false
 	if k := chargeTalent(u); k != nil && chargeNeed(k) > 0 && u.charge >= chargeNeed(k) {
+		b.attackPrelude(u)
+		preAttackDone = true
 		b.releaseCharge(u, k)
 		if !u.alive() || b.over {
 			return
@@ -375,19 +416,26 @@ func (b *battle) act(u *unit) {
 		if len(mates) > 0 {
 			t = mates[b.rng.IntN(len(mates))]
 		}
-	} else if k := u.tal(famChongFeng); k != nil && t != nil && b.chance(k.param(0)) {
-		low := t
-		for _, x := range b.attackable(u) { // 易死目标：生命最少、不无敌、不隐身
-			if !b.invincible(x) && x.hp < low.hp {
-				low = x
-			}
-		}
-		dist := int64(abs(low.slot()-u.slot()) + 1) // 对位为 1
-		t = low
-		b.tempUp(u, k, u.baseAtt*int64(k.param(1))*dist/100)
+	} else {
+		t = b.chongFengTarget(u, t)
 	}
 	if t == nil {
 		return
 	}
-	b.attackAction(u, t, 100, atkMain) // attack_action.go
+	b.resolveAttack(u, t, 100, atkMain, preAttackDone)
+}
+
+func (b *battle) chongFengTarget(u, t *unit) *unit {
+	if k := u.tal(famChongFeng); k != nil && t != nil && b.chance(k.param(0)) {
+		low := t
+		for _, x := range b.attackable(u) {
+			if !b.invincible(x) && x.hp < low.hp {
+				low = x
+			}
+		}
+		dist := int64(abs(low.slot()-u.slot()) + 1)
+		b.tempUp(u, k, u.baseAtt*int64(k.param(1))*dist/100) // 初始攻击力（用户规则）
+		return low
+	}
+	return t
 }

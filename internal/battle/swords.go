@@ -56,33 +56,42 @@ func (b *battle) giveSword(x *unit) bool {
 	return true
 }
 
-// swordStrike：攻击后所有仙剑以 50% 初始攻击各打一次，之后剑消散。
-func (b *battle) swordStrike(u, t *unit) {
-	if u.swords == 0 || !t.alive() {
-		return
+// fireSwords 让 u 身上的仙剑对 t 逐把结算 50% 当前攻击伤害（不改 u.swords），返回最后攻击的目标。
+func (b *battle) fireSwords(u, t *unit) *unit {
+	if u.swords == 0 || !u.alive() || b.over {
+		return t
 	}
-	b.w.u8(CmdSwordAttack)
-	b.w.u8(u.Pos)
-	b.w.u8(t.Pos)
-	b.w.u8(u.swords)
-	// 每把剑各打一下 50% 初始攻击（官方战报：SWORD_ATTACK{count 3} 后 3 条 SUB_HP，目标死了就停）。
+	if t == nil || !t.alive() {
+		if t = b.pickTarget(u); t == nil {
+			return nil
+		}
+	}
+	// 每把剑各打一下 50% 当前攻击（官方战报：SWORD_ATTACK{count 3} 后 3 条 SUB_HP，目标死了就停）。
 	// 仙剑属性决定伤害类型（官方战报：SUB_HP 10001 雷 / 10002 火 / 10003 土 / 10004 水 / 10006 道，雷剑触发仙衣）；
 	// 道属性仙剑是生命流失（FAQ）。每把剑攻击后 5% 概率附带：水 僵化、火 燃烧5、雷 麻痹、土 毒砂5。
 	id := swordMagic[u.swordKind]
-	for i := range u.swords {
-		if b.over {
+	count, deaths := u.swords, u.deaths
+	countAt := -1
+	for range count {
+		if b.over || !u.alive() || u.deaths != deaths {
 			break
 		}
 		if !t.alive() { // 打死当前目标后剩下的仙剑改打当前对位继续出手（用户：有几把放几次）
 			if t = b.pickTarget(u); t == nil {
 				break
 			}
+			countAt = -1
+		}
+		if countAt == -1 {
 			b.w.u8(CmdSwordAttack)
 			b.w.u8(u.Pos)
 			b.w.u8(t.Pos)
-			b.w.u8(u.swords - i)
+			countAt = len(b.w.b)
+			b.w.u8(0)
 		}
-		n := u.baseAtt / 2
+		// 每段只播放实际出手的剑数。死亡技可在第一剑后杀死剑主并清空仙剑。
+		b.w.b[countAt]++
+		n := u.att / 2
 		if k := u.tal(famBuJian); k != nil && k.tjOn() && b.chance(k.tjPct()) {
 			n *= 2 // 布剑激发：飞剑 $x% 概率双倍伤害
 		}
@@ -95,21 +104,49 @@ func (b *battle) swordStrike(u, t *unit) {
 			b.applyBuff(u, t, buff) // FAQ「每次仙剑攻击后有5%几率产生buff」：攻击后，在伤害之后
 		}
 	}
-	swords := u.swords
-	u.swords = 0
+	return t
+}
+
+// swordStrike：攻击后所有仙剑以 50% 当前攻击各打一次（仙剑一直保留，仅死亡时清除）；
+// 携带藏剑于花的护法攻击后，前阵其他护法所携带的仙剑也按各自 50% 攻击力出手一次。
+func (b *battle) swordStrike(u, t *unit) {
+	if !t.alive() {
+		return
+	}
+	if u.swords > 0 {
+		t = b.fireSwords(u, t)
+	}
+	if u.tal(famCangJianYuHua) != nil {
+		for _, x := range b.allies(u) {
+			if x == u || x.swords == 0 || b.over {
+				continue
+			}
+			t = b.fireSwords(x, t)
+		}
+	}
+	if u.swords == 0 || t == nil || !t.alive() {
+		return
+	}
+	// 紫青剑天将：带剑护法攻击时概率召唤本方前阵所有飞剑合击。攻击者自己的仙剑按原伤害（50% 当前攻击）再打一次，
+	// 其他护法的仙剑按原伤害 60% 结算（FAQ：合击时非本护法的仙剑伤害为原伤害 60%）。
 	for _, c := range b.allies(u) {
 		k := c.tal(famZiQingJian)
-		if k == nil || !k.tjOn() || !t.alive() || !b.chance(int(k.tjX())*swords) {
+		if k == nil || !k.tjOn() || !t.alive() || !b.chance(int(k.tjX())*u.swords) {
 			continue
 		}
-		for _, x := range b.allies(u) { // 合击：非本护法的仙剑伤害为原伤害 60%
-			if x != u && x.swords > 0 && t.alive() {
-				b.show(c, k.id, t)
-				if n := x.baseAtt * int64(x.swords) / 2 * 60 / 100; x.swordKind == 0 { // 伤害来源与属性仍是该仙剑的拥有者（FAQ）
-					b.loseHP(x, t, swordMagic[0], n)
-				} else {
-					b.propertyHurt(x, t, swordMagic[x.swordKind], n, x.swordKind)
-				}
+		for _, x := range b.allies(u) {
+			if x.swords == 0 || !t.alive() {
+				continue
+			}
+			pct := int64(60)
+			if x == u {
+				pct = 100
+			}
+			b.show(c, k.id, t)
+			if d := x.att * int64(x.swords) / 2 * pct / 100; x.swordKind == 0 { // 伤害来源与属性仍是该仙剑的拥有者（FAQ）
+				b.loseHP(x, t, swordMagic[0], d)
+			} else {
+				b.propertyHurt(x, t, swordMagic[x.swordKind], d, x.swordKind)
 			}
 		}
 		break
