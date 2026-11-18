@@ -1,4 +1,4 @@
-// Package xym 实现迷你西游（细水长流私服）客户端的 TCP 协议。
+// Package xym 实现迷你西游（再续前缘私服）客户端的 TCP 协议。
 //
 // 依据（client/lua/decompiled/script/）：net.lua（分帧、主命令）、nex_prot.lua（扩展协议编解码）、
 // auto/proto.lua（全部 53 个模块、1435 条消息的字段模板，导出为内嵌的 proto.json）。
@@ -23,6 +23,9 @@ import (
 
 //go:embed proto.json
 var protoJSON []byte
+
+//go:embed draft_proto.json
+var draftProtoJSON []byte
 
 // Field 是字段模板的一项：{类型, 名字, 子结构(仅 array)}。
 type Field struct {
@@ -61,6 +64,9 @@ func init() {
 	var raw map[string]map[string]json.RawMessage
 	if err := json.Unmarshal(protoJSON, &raw); err != nil {
 		panic("xym: proto.json: " + err.Error())
+	}
+	if err := json.Unmarshal(draftProtoJSON, &raw); err != nil {
+		panic("xym: draft_proto.json: " + err.Error())
 	}
 	for mod, entries := range raw {
 		for name, msg := range entries {

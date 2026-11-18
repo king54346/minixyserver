@@ -1,6 +1,6 @@
-// Package store 是用户存档的持久化层：账号、角色、玩家玩法存档。
+// Package store 是用户存档的持久化层：账号、角色、玩家玩法存档、全服数据、录像（表结构见 internal/model）。
 //
-// 两种实现：SQLite（默认，data/xym/xym.db）与 File（原来的 JSON 文件：accounts.json、roles.json、
+// 三种实现：MySQL（分表存储）、SQLite（默认，data/xym/xym.db）与 File（原来的 JSON 文件：accounts.json、roles.json、
 // players/<uid>.json，兜底 / 回退用）。业务侧（xymsrv）把全部数据缓存在内存里，修改后立即调
 // Save* 落盘；Load* 只在启动或首次访问时调用。
 //
@@ -30,19 +30,22 @@ type Account struct {
 }
 
 type Role struct {
-	UID         int32     `json:"uid"`
+	Created     time.Time `json:"created"`
 	Name        string    `json:"name"`
 	Icon        int       `json:"icon"`
 	Grade       int       `json:"grade"`
+	VIP         int       `json:"vip"`
+	TPoint      int       `json:"tpoint"`
+	HPoint      int       `json:"hpoint"`
+	UID         int32     `json:"uid"`
 	Exp         int32     `json:"exp"`
 	Cash        int32     `json:"cash"`
 	Gold        int32     `json:"gold"`
 	FriendPoint int32     `json:"friend_point,omitempty"`
 	SoulExp     int32     `json:"soulexp,omitempty"`
-	VIP         int       `json:"vip"`
-	TPoint      int       `json:"tpoint"`
-	HPoint      int       `json:"hpoint"`
-	Created     time.Time `json:"created"`
+	StopUpgrade int8      `json:"stop_upgrade,omitempty"`
+	Xiuwei      int64     `json:"xiuwei,omitempty"`
+	XGrade      int       `json:"xgrade,omitempty"`
 }
 
 type Store interface {
@@ -53,13 +56,30 @@ type Store interface {
 	// LoadPlayer 返回玩家存档（JSON）；还没有存档时返回 ErrNotFound。
 	LoadPlayer(uid int32) ([]byte, error)
 	SavePlayer(uid int32, save []byte) error
+	// LoadGlobal 返回一份全服数据（JSON，name 见 xymsrv/globals.go）；没有时返回 ErrNotFound。
+	LoadGlobal(name string) ([]byte, error)
+	SaveGlobal(name string, data []byte) error
+	// LoadRecord 返回一条录像（kind 见 RecordGate 等）；没有时返回 ErrNotFound。owner 是录像主人。
+	LoadRecord(kind string, key int64) ([]byte, error)
+	SaveRecord(kind string, key int64, owner int32, data []byte) error
+	// ListRecords 列出某一类的全部录像（按 key 排序）。
+	ListRecords(kind string) ([]Record, error)
 	Close() error
+}
+
+// Record 是 ListRecords 返回的一条录像。
+type Record struct {
+	Kind  string
+	Key   int64
+	Owner int32
+	Data  []byte
 }
 
 // AccountKey 是账号名的唯一键：去首尾空白、转小写（登录不分大小写）。
 func AccountKey(urs string) string { return strings.ToLower(strings.TrimSpace(urs)) }
 
-// Open 按 kind（sqlite / file）打开存档。sqlite 首次打开空库时，若 dir 下有旧的 JSON 存档会自动导入。
+// Open 按 kind（mysql / sqlite / file）打开存档。MySQL 读 XYM_MYSQL_DSN；
+// sqlite 首次打开空库时，若 dir 下有旧的 JSON 存档会自动导入。
 func Open(kind, dir, dbPath string) (Store, error) {
 	switch kind {
 	case "sqlite":
@@ -74,6 +94,8 @@ func Open(kind, dir, dbPath string) (Store, error) {
 		return db, nil
 	case "file":
 		return OpenFile(dir), nil
+	case "mysql":
+		return OpenMySQL("")
 	}
-	return nil, fmt.Errorf("store: unknown kind %q (sqlite|file)", kind)
+	return nil, fmt.Errorf("store: unknown kind %q (mysql|sqlite|file)", kind)
 }

@@ -58,7 +58,7 @@ func Migrate(db *SQLite, dir string) (MigrateResult, error) {
 				return fmt.Errorf("store: migrate player %d: %w", uid, err)
 			}
 		}
-		return nil
+		return moveLegacyRows(tx) // 旧 JSON 存档里的全服数据 / 录像也在 players/ 下，导入后搬到 globals / records
 	})
 	if err != nil {
 		return res, err

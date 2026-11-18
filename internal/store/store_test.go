@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ func roundTrip(t *testing.T, st Store) {
 	if err != nil || len(roles) != 1 || !sameRole(roles[0], role) || !roles[0].Created.Equal(created) {
 		t.Fatalf("roles %v %+v", err, roles)
 	}
-	if got, err := st.LoadPlayer(20001); err != nil || string(got) != string(save) {
+	if got, err := st.LoadPlayer(20001); err != nil || !equalJSON(got, save) {
 		t.Fatalf("player %v %s", err, got)
 	}
 }
@@ -78,6 +79,62 @@ func TestSQLiteRoundTrip(t *testing.T) {
 	defer db.Close()
 	if accs, _ := db.LoadAccounts(); len(accs) != 1 {
 		t.Fatalf("reopen: %d accounts", len(accs))
+	}
+}
+
+// WAL 读连接不能排在写连接后面，否则多人登录读档会被频繁写档阻塞。
+func TestSQLiteReadDuringWrite(t *testing.T) {
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "xym.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SavePlayer(20001, []byte(`{"version":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		finished <- db.db.Transaction(func(tx *gorm.DB) error {
+			if err := savePlayer(tx, 20001, []byte(`{"version":2}`)); err != nil {
+				return err
+			}
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case err := <-finished:
+		t.Fatalf("write failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("write did not start")
+	}
+	read := make(chan string, 1)
+	go func() {
+		data, err := db.LoadPlayer(20001)
+		if err != nil {
+			read <- err.Error()
+			return
+		}
+		read <- string(data)
+	}()
+	select {
+	case got := <-read:
+		if got != `{"version":1}` {
+			t.Errorf("uncommitted or invalid read: %s", got)
+		}
+	case <-time.After(time.Second):
+		t.Error("read blocked behind write")
+	}
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if got, err := db.LoadPlayer(20001); err != nil || string(got) != `{"version":2}` {
+		t.Fatalf("committed read: %s, %v", got, err)
 	}
 }
 
@@ -131,7 +188,7 @@ func TestMigrate(t *testing.T) {
 	if len(roles) != 1 || roles[0].Name != "毛乐志" || roles[0].Cash != 16535 || roles[0].SoulExp != 218 {
 		t.Fatalf("roles %+v", roles)
 	}
-	if got, err := db.LoadPlayer(20001); err != nil || string(got) != string(save) {
+	if got, err := db.LoadPlayer(20001); err != nil || !equalJSON(got, save) {
 		t.Fatalf("player %v %s", err, got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "accounts.json")); err != nil {
@@ -145,7 +202,7 @@ func TestMigrate(t *testing.T) {
 
 func TestOpen(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Open("mysql", dir, ""); err == nil {
+	if _, err := Open("unsupported", dir, ""); err == nil {
 		t.Fatal("unknown kind accepted")
 	}
 	st, err := Open("sqlite", dir, filepath.Join(dir, "sub", "xym.db")) // 空目录、库所在目录不存在
@@ -204,5 +261,92 @@ func TestOpenLegacySchema(t *testing.T) {
 	}
 	if p, err := db.LoadPlayer(20001); err != nil || string(p) != `{"uid":20001}` {
 		t.Fatalf("player %v %s", err, p)
+	}
+}
+
+// globalsAndRecords：全服数据、录像的存取与列出。
+func globalsAndRecords(t *testing.T, st Store) {
+	t.Helper()
+	if _, err := st.LoadGlobal("lundao"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("empty global err = %v", err)
+	}
+	if err := st.SaveGlobal("lundao", []byte(`{"ranks":[1]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := st.LoadGlobal("lundao"); err != nil || string(got) != `{"ranks":[1]}` {
+		t.Fatalf("global %v %s", err, got)
+	}
+	for k, owner := range map[int64]int32{808: 20001, 809: 20002} {
+		if err := st.SaveRecord(RecordGate, k, owner, []byte(`{"uid":`+strconv.Itoa(int(owner))+`}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := st.LoadRecord(RecordGate, 809); err != nil || string(got) != `{"uid":20002}` {
+		t.Fatalf("record %v %s", err, got)
+	}
+	l, err := st.ListRecords(RecordGate)
+	if err != nil || len(l) != 2 || l[0].Key != 808 || l[0].Owner != 20001 || l[1].Owner != 20002 {
+		t.Fatalf("list %v %+v", err, l)
+	}
+	if l, _ := st.ListRecords(RecordQujingTrial); len(l) != 0 {
+		t.Fatalf("other kind %+v", l)
+	}
+}
+
+func TestGlobalsAndRecords(t *testing.T) {
+	db, err := OpenSQLite(filepath.Join(t.TempDir(), "xym.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	globalsAndRecords(t, db)
+	globalsAndRecords(t, OpenFile(t.TempDir()))
+}
+
+// TestUpgradeV2：旧库里用保留 uid 存的全服数据和录像，打开后搬进 globals / records，players 里只剩玩家。
+func TestUpgradeV2(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "xym.db")
+	raw, err := gorm.Open(sqlite.Open("file:"+filepath.ToSlash(path)), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE players (uid INTEGER PRIMARY KEY, save TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+		`INSERT INTO players VALUES (20001, '{"uid":20001}', 1)`,
+		`INSERT INTO players VALUES (2, '{"ranks":[20001]}', 1)`,
+		`INSERT INTO players VALUES (1000080809, '{"uid":20001,"name":"甲"}', 1)`,
+		`INSERT INTO players VALUES (1100000013, '{"uid":20002}', 1)`,
+	} {
+		if err := raw.Exec(q).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d, _ := raw.DB(); d != nil {
+		d.Close()
+	}
+	db, err := OpenSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if got, err := db.LoadGlobal("lundao"); err != nil || string(got) != `{"ranks":[20001]}` {
+		t.Fatalf("lundao %v %s", err, got)
+	}
+	if l, _ := db.ListRecords(RecordGate); len(l) != 1 || l[0].Key != 80809 || l[0].Owner != 20001 {
+		t.Fatalf("gate %+v", l)
+	}
+	if l, _ := db.ListRecords(RecordQujingTrial); len(l) != 1 || l[0].Key != 13 || l[0].Owner != 20002 {
+		t.Fatalf("trial %+v", l)
+	}
+	for _, uid := range []int32{2, 1000080809, 1100000013} {
+		if _, err := db.LoadPlayer(uid); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("uid %d still in players", uid)
+		}
+	}
+	if _, err := db.LoadPlayer(20001); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := db.schemaVersion(); v != schemaVersion {
+		t.Fatalf("version %d", v)
 	}
 }

@@ -1,0 +1,12 @@
+{
+  "DRAFT_PTO": {
+    "C_DRAFT_ACTION": {
+      "SUBCMD": 97001,
+      "BODY": [["int8","action"],["int8","round"],["int32","card"],["int8","leader"],["array","lineup",[["int32","card"]]]]
+    },
+    "S_DRAFT_STATE": {
+      "SUBCMD": 97001,
+      "BODY": [["varstr","state"]]
+    }
+  }
+}

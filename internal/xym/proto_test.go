@@ -11,12 +11,12 @@ import (
 )
 
 func TestTableLoaded(t *testing.T) {
-	if n := len(All(C2S)); n != 890 {
-		t.Errorf("C2S messages = %d, want 890", n)
+	if n := len(All(C2S)); n != 891 {
+		t.Errorf("C2S messages = %d, want 891", n)
 	}
-	// 545 条 S_ 消息里有 4 对共用协议号，所以按协议号只有 541 个
-	if n := len(All(S2C)); n != 541 || len(Duplicates) != 4 {
-		t.Errorf("S2C pids = %d (want 541), duplicates = %d (want 4)", n, len(Duplicates))
+	// 546 条 S_ 消息里有 4 对共用协议号，所以按协议号只有 542 个。
+	if n := len(All(S2C)); n != 542 || len(Duplicates) != 4 {
+		t.Errorf("S2C pids = %d (want 542), duplicates = %d (want 4)", n, len(Duplicates))
 	}
 	s := ByName("LOGIN_PTO.S_SEND_SID")
 	if s == nil || s.PID != 2002 {
