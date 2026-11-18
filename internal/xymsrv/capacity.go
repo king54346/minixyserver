@@ -7,7 +7,7 @@ import (
 )
 
 // 战力：照客户端 logic/capacity.lua getPetCapLikeServer——
-// (攻击 × 4 + 生命) × 法术加成 × 神通加成 × 洞府修炼加成（本服无洞府，按 1），
+// (攻击 × 4 + 生命) × 法术加成 × 神通加成 × 洞府修炼加成，
 // 攻击 / 生命用发给客户端的值（等级公式 + 装备 + 缘分，petStats）。阵容「总战力」客户端自己按这个算，
 // 开战前的「战力」（C_GET_FIGHT_POINT）与切换阵容的「计算战力」由服务端算，所以要一致。
 //
@@ -36,7 +36,23 @@ func (p *Player) petCap(pet *Pet) float64 {
 		return 0
 	}
 	att, hp := p.petStats(pet)
-	return float64(att*4+hp) * floor2(p.capMagicRate(pet, pi)) * floor2(p.capTalentRate(pet, pi))
+	return float64(att*4+hp) * floor2(p.capMagicRate(pet, pi)) * floor2(p.capTalentRate(pet, pi)) * p.capPartyRate(pi.Race)
+}
+
+// Match capacity.getPartyTrainAddRate and the effect_lv sent by dfXiuweiList.
+func (p *Player) capPartyRate(race int) float64 {
+	if p.DF == nil || len(p.DF.Caps) == 0 {
+		return 1
+	}
+	rate := 1.0
+	for i, name := range []string{"human", "ghost", "god", "beast"} {
+		weight := 0.001
+		if race == i+1 {
+			weight += 0.0025
+		}
+		rate += weight * 0.5 * float64(p.effLv(name, p.grade()))
+	}
+	return rate + 0.001*float64(p.effLv("hp", p.grade()))
 }
 
 func (p *Player) capMagicRate(pet *Pet, pi *gamedata.PetInfo) float64 {

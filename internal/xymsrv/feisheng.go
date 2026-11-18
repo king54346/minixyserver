@@ -80,12 +80,12 @@ func onFeisheng(s *Session, p *Player, m xym.Msg) {
 		key, _ := x["key"].(int64)
 		switch x["type"] {
 		case "suit":
-			if su := p.suitByNum(int32(key)); su != nil && !seenS[su] && !su.Locked && !p.suitWorn(su.Pos) && suitStar(su.Type) == star {
+			if su := p.suitByNum(int32(key)); su != nil && !seenS[su] && !su.Locked && !p.suitWorn(su.Pos) && !isSuitMaterial(su.Type) && suitStar(su.Type) == star {
 				seenS[su] = true
 				mt.suits = append(mt.suits, su)
 			}
 		case "magic":
-			if b := p.bookByPos(int(key)); b != nil && !seenB[b] && !b.Locked && !p.bookWorn(b.Pos) && magicStar(b.Type) == star {
+			if b := p.bookByPos(int(key)); b != nil && !seenB[b] && !b.Locked && !p.bookWorn(b.Pos) && !isBookMaterial(b.Type) && magicStar(b.Type) == star {
 				seenB[b] = true
 				mt.books = append(mt.books, b)
 			}
@@ -155,13 +155,24 @@ func onFeisheng(s *Session, p *Player, m xym.Msg) {
 	for _, x := range changed {
 		full, brief = append(full, p.petFull(x)), append(brief, p.petBrief(x))
 	}
+	for _, x := range p.fightRelatePets(changed) {
+		full = append(full, p.petFull(x))
+	}
 	s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0, "pets": full})
 	s.SendExt("PET_PTO.S_PET_LIST", xym.Msg{"is_all": 0, "pets": brief})
+	if len(removed) > 0 {
+		s.SendExt("ITEM_PTO.S_WEAR_SUIT", p.wearSuitMsg())
+		s.SendExt("ITEM_PTO.S_WEAR_BOOK", p.wearBookMsg())
+		if lu := p.lineup(p.FightNo); lu != nil {
+			s.SendExt("PET_PTO.S_SET_LEADER_SUC", xym.Msg{"leader": lu.Leader, "skill": p.leaderSkill()})
+		}
+		s.SendExt("LINEUP_PTO.S_SEND_LINEUP", p.lineupsMsg())
+	}
 	s.SendExt("ETC_PTO.S_PET_UPGRADE", xym.Msg{"npcnum": changed[0].NpcNum}) // 并卡后 pet 已删，要指向留下的那张
 }
 
 // feishengMerge：飞升后若背包里已有同类型的护法，两张并成一张（留在阵上的那张，否则留原有的那张），
-// 返回留下的和被并掉的；两张都在阵上时不并。
+// 返回留下的和被并掉的；合并后修复所有阵容引用。
 func (p *Player) feishengMerge(pet *Pet) (keep, gone *Pet) {
 	var other *Pet
 	for _, x := range p.Pets {
@@ -176,17 +187,51 @@ func (p *Player) feishengMerge(pet *Pet) (keep, gone *Pet) {
 	keep, gone = other, pet
 	if p.inLineup(pet.BagPos) && !p.inLineup(other.BagPos) {
 		keep, gone = pet, other
-	} else if p.inLineup(pet.BagPos) {
-		return pet, nil
 	}
+	p.migrateOwned()
 	keep.mergeFrom(gone)
+	p.mergePetLineups(keep, gone)
 	p.removePet(gone)
 	return keep, gone
+}
+
+// In each formation reuse the surviving card once. Equipment on a vacated
+// duplicate slot returns to the bag; other formations retain their loadouts.
+func (p *Player) mergePetLineups(keep, gone *Pet) {
+	for _, lu := range p.Lineups {
+		if lu == nil {
+			continue
+		}
+		kept := -1
+		for i, sl := range lu.Slots {
+			if sl != nil && sl.Pet == keep.BagPos {
+				kept = i
+				break
+			}
+		}
+		for i, sl := range lu.Slots {
+			if sl == nil || sl.Pet != gone.BagPos {
+				continue
+			}
+			if kept < 0 {
+				sl.Pet = keep.BagPos
+				kept = i
+			} else {
+				lu.Slots[i] = &Slot{}
+			}
+			if lu.Leader == i+1 {
+				lu.Leader = kept + 1
+			}
+		}
+	}
 }
 
 // feishengSplit 把 pet 飞升成 pi.Upgrade：用掉 cards 张同名卡（含本卡）。没用掉的低星同名卡不能跟着升星，
 // 留成一张原类型的护法（同名卡分开结算）。返回有变化的护法。
 func (p *Player) feishengSplit(pet *Pet, pi *gamedata.PetInfo, cards int) []*Pet {
+	p.migrateOwned()            // 改变类型前保留低星卡的历史同名数量。
+	p.OwnedCopies[pi.Upgrade]++ // 飞升得到一张高星本体，低星余卡不重复计为获得。
+	p.markOwned(pi.Upgrade)
 	oldType, left := pet.Type, pet.TLAdd-(cards-1) // 剩下的同名卡张数（不含本卡）
 	pet.Type, pet.TLAdd = pi.Upgrade, 0
 	pet.SoulGrade, pet.TalGrade, pet.TLPoint = 0, [3]int{}, 0

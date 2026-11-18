@@ -151,19 +151,102 @@ func TestBag(t *testing.T) {
 	if p.suitByNum(suit.ItemNum) != nil {
 		t.Fatal("suit not sold")
 	}
+
+	// 强化材料（碎晶 2001-2004，Kind 占位 ITK_WEAPON）不能穿戴；历史误穿的登录自愈清掉
+	mat := p.addSuit(2001)
+	c.sendExt("ITEM_PTO.C_SUIT_ON", xym.Msg{"fight_pos": 1, "itemnum": mat.ItemNum})
+	if main, _ := c.recv(); main != xym.SMsg { // 弹提示「强化材料不能穿戴」
+		t.Fatal("material wear should be refused with message")
+	}
+	c.until(t, "ITEM_PTO.S_WEAR_SUIT")
+	if sl := p.fightSlot(1); sl.Suit[0] == mat.Pos || sl.Suit[1] == mat.Pos || sl.Suit[2] == mat.Pos {
+		t.Fatalf("material worn: %v", sl.Suit)
+	}
+	p.fightSlot(1).Suit[0] = mat.Pos // 伪造旧存档里的误穿数据
+	p.fixAllGear()
+	if sl := p.fightSlot(1); sl.Suit[0] == mat.Pos || sl.Suit[1] == mat.Pos || sl.Suit[2] == mat.Pos {
+		t.Fatalf("material not healed: %v", sl.Suit)
+	}
+
+	// 法术强化材料（17000-17004）同样不能穿戴；历史误穿的登录自愈清掉
+	bk := p.addBook(17002)
+	c.sendExt("ITEM_PTO.C_BOOK_ON", xym.Msg{"fight_pos": 1, "itemnum": bk.Pos})
+	if main, _ := c.recv(); main != xym.SMsg {
+		t.Fatal("book material wear should be refused with message")
+	}
+	c.until(t, "ITEM_PTO.S_WEAR_BOOK")
+	if sl := p.fightSlot(1); sl.Book[0] == bk.Pos || sl.Book[1] == bk.Pos {
+		t.Fatalf("book material worn: %v", sl.Book)
+	}
+	p.fightSlot(1).Book[0] = bk.Pos // 伪造旧存档里的误穿数据
+	p.fixAllGear()
+	if sl := p.fightSlot(1); sl.Book[0] == bk.Pos || sl.Book[1] == bk.Pos {
+		t.Fatalf("book material not healed: %v", sl.Book)
+	}
 }
 
-// TestBagExpandPrice：装备 / 法术背包扩充 100 元宝起、每次 ×3，600 格封顶；护法固定 300。
+// TestBagExpandPrice：装备 / 法术背包初始 300 格，每次 100 元宝扩 20 格，1000 格封顶；护法固定 300。
 func TestBagExpandPrice(t *testing.T) {
 	p := newPlayer(1)
-	for i, want := range []int32{100, 300, 900, 2700} {
-		if got := p.bagExpandPrice(bagSuit); got != want {
-			t.Fatalf("buy %d: %d, want %d", i, got, want)
+	if p.BagLimit[bagSuit] != gearBagSize || p.BagLimit[bagBook] != gearBagSize {
+		t.Fatalf("initial gear bags %v", p.BagLimit)
+	}
+	for i := range 4 { // 每次都是 100 元宝（不再 ×3）
+		if got := p.bagExpandPrice(bagSuit); got != gearBagGold {
+			t.Fatalf("buy %d: %d", i, got)
 		}
 		p.BagBuys[bagSuit]++
 	}
 	p.BagLimit[bagBook] = gearBagMax
 	if p.bagExpandPrice(bagBook) != 0 || p.bagExpandPrice(bagPet) != bagExpandGold {
 		t.Fatal("cap / pet price")
+	}
+}
+
+// TestTianshuPartMix：无字天书碎片按道具说明 20:1 合成无字天书（客户端没有独立合成界面，
+// 走「使用」判定）。不足 20 个只提示不扣；use_num 指定份数时按份数合。
+func TestTianshuPartMix(t *testing.T) {
+	c, p, _ := actWorld(t, "tianshu")
+	p.addItem(tianshuPartItem, 19)
+	pos := func() int64 {
+		for _, it := range p.Items {
+			if it.Type == tianshuPartItem {
+				return int64(it.Pos)
+			}
+		}
+		return 0
+	}()
+
+	c.sendExt("ITEM_PTO.C_USE_ITEM", xym.Msg{"pos": pos, "type": tianshuPartItem, "use_num": 1, "choose": 0, "usetype": 0})
+	c.expectMsg(t, "需要 20 个无字天书碎片")
+	if n := p.itemCount(tianshuPartItem); n != 19 {
+		t.Fatalf("不足 20 个不该扣碎片, got %d", n)
+	}
+	if n := p.itemCount(wuziTianshu); n != 0 {
+		t.Fatalf("不足 20 个不该给天书, got %d", n)
+	}
+
+	// 补到 25 个：合 1 部（use_num=1），剩 5 个。
+	p.addItem(tianshuPartItem, 6)
+	c.sendExt("ITEM_PTO.C_USE_ITEM", xym.Msg{"pos": pos, "type": tianshuPartItem, "use_num": 1, "choose": 0, "usetype": 0})
+	c.until(t, "ETC_PTO.S_REWARD_MSG")
+	if n := p.itemCount(wuziTianshu); n != 1 {
+		t.Fatalf("应合成 1 部无字天书, got %d", n)
+	}
+	if n := p.itemCount(tianshuPartItem); n != 5 {
+		t.Fatalf("应剩 5 个碎片, got %d", n)
+	}
+
+	// 再补到 45 个（5+40）：每次「使用」合 1 部，连用两次。
+	p.addItem(tianshuPartItem, 40)
+	for range 2 {
+		c.sendExt("ITEM_PTO.C_USE_ITEM", xym.Msg{"pos": pos, "type": tianshuPartItem, "use_num": 1, "choose": 0, "usetype": 0})
+		c.until(t, "ETC_PTO.S_REWARD_MSG")
+	}
+	if n := p.itemCount(wuziTianshu); n != 3 {
+		t.Fatalf("应累计 3 部无字天书, got %d", n)
+	}
+	if n := p.itemCount(tianshuPartItem); n != 5 {
+		t.Fatalf("45 个应合 2 部剩 5 个, got %d", n)
 	}
 }

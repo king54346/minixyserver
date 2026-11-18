@@ -125,14 +125,6 @@ func onChallengeGuard(s *Session, p *Player, m xym.Msg) {
 	s.SendExt("ETC_PTO.S_REWARD_MSG", rewardMsg(typ, nil))
 }
 
-// fightPointOf 是 uid 的出战战力（论道快照 / 当前阵容）。
-func (srv *Server) fightPointOf(uid int32, me *Player) int {
-	if f := srv.realFoe(uid, me); f != nil {
-		return f.FP
-	}
-	return 0
-}
-
 func init() {
 	Handle("DONGFU_PTO.C_GET_CHANGE_GUARD_MEMBER_LIST", onChangeGuardList)
 	Handle("DONGFU_PTO.C_CHANGE_GUARD", onChangeGuard)

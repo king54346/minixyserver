@@ -3,6 +3,7 @@ package xymsrv
 import (
 	"math/rand/v2"
 	"slices"
+	"time"
 
 	"turnrpg/internal/battle"
 	"turnrpg/internal/gamedata"
@@ -110,16 +111,11 @@ func xiuweiLv(total int32) (lv int, exp int32) {
 	return lv, exp
 }
 
-// memberLimit 是人物等级允许的个人修为上限（PartyXiuWeiView getLimitGrade）。
+// memberLimit 是个人修为的最高等级上限（洞府修为最高满级 25 级）。
+// 之前按人物等级 (<=30 为 15 等) 限制导致卡级玩家（如停 30 级）在高级洞府（如洞府等级 20 级）中
+// 修为达到 15 级时被错误置为 exp_next=0 显示“满级”且无法继续修炼。
+// 实际上个人可修炼至满级 25 级，战斗中超出洞府上限的部分自动按洞府建筑等级截断无效（见 effLv）。
 func memberLimit(grade int) int {
-	switch {
-	case grade <= 20:
-		return 5
-	case grade <= 30:
-		return 15
-	case grade <= 40:
-		return 20
-	}
 	return 25
 }
 
@@ -217,18 +213,38 @@ func (p *Player) effLv(t string, grade int) int {
 	return min(lv, d.Caps[t], memberLimit(grade))
 }
 
-// applyXiuwei 把生效的修为加到出战单位上（playerTeam 调用）。
+// dfPanelPct 是攻击 / 气血修为的面板加成百分比（效果文案「每一级提升全体 1% 面板攻击力 / 生命值」）。
+// 面板值就是服务端下发的 petStats（PetCard:refreshWidgets 显示 data.att/data.hp），所以加成在 petStats 里算。
+func (p *Player) dfPanelPct() (att, hp int) {
+	if p.DF == nil || len(p.DF.Caps) == 0 {
+		return 0, 0
+	}
+	g := p.grade()
+	return p.effLv("attack", g), p.effLv("hp", g)
+}
+
+// pushXiuweiPanel 更新客户端缓存的护法属性，仅在生效加成变化时推送。
+func (s *Session) pushXiuweiPanel(p *Player, oldAtt, oldHP int) {
+	if att, hp := p.dfPanelPct(); att == oldAtt && hp == oldHP {
+		return
+	}
+	pets := p.sortedPets()
+	full := make([]xym.Msg, 0, len(pets))
+	for _, pet := range pets {
+		full = append(full, p.petFull(pet))
+	}
+	s.sendUpdates("PET_PTO.S_UPDATE_PET", "pets", full)
+}
+
+// applyXiuwei 把生效的修为战斗效果加到出战单位上（playerTeam 调用）：
+// 气血修为的几率免疫道属性伤害（DaoImmune）、各族修为的属性减伤 / 对族增伤。
+// 攻击 / 生命的 1%/级是面板加成，已含在 petStats 里，这里不再重复加。
 func (p *Player) applyXiuwei(f *battle.Fighter) {
 	if p.DF == nil || len(p.DF.Caps) == 0 {
 		return
 	}
 	g := p.grade()
-	if n := p.effLv("attack", g); n > 0 {
-		f.Att += f.Att * int32(n) / 100
-	}
 	if n := p.effLv("hp", g); n > 0 {
-		f.HP += f.HP * int32(n) / 100
-		f.MaxHP = f.HP
 		f.DaoImmune = n
 	}
 	for t, rr := range dfRaceDmg {
@@ -289,11 +305,25 @@ func (p *Player) dfTask(df *Dongfu, rng *rand.Rand) int {
 	if left > 0 && d.TaskType == 0 {
 		star := 1 + rng.IntN(3)
 		if rng.IntN(2) == 0 {
-			if l := gamedata.SuitsByStar[star]; len(l) > 0 {
+			var l []int // 过滤强化材料（2001-2004），上交需求只应是真装备
+			for _, id := range gamedata.SuitsByStar[star] {
+				if !isSuitMaterial(id) {
+					l = append(l, id)
+				}
+			}
+			if len(l) > 0 {
 				d.TaskKind, d.TaskType = "suit", int32(l[rng.IntN(len(l))])
 			}
-		} else if l := gamedata.BooksByStar[star]; len(l) > 0 {
-			d.TaskKind, d.TaskType = "magic", l[rng.IntN(len(l))]
+		} else {
+			var l []int32 // 过滤法术强化材料（17000-17004）
+			for _, id := range gamedata.BooksByStar[star] {
+				if !isBookMaterial(id) {
+					l = append(l, id)
+				}
+			}
+			if len(l) > 0 {
+				d.TaskKind, d.TaskType = "magic", l[rng.IntN(len(l))]
+			}
 		}
 	}
 	return left
@@ -378,6 +408,7 @@ func onDongfuXiuweiTask(s *Session, p *Player, m xym.Msg) {
 
 func onAddMemberXiuwei(s *Session, p *Player, m xym.Msg) {
 	t, count, need := m["type"].(string), int(m["count"].(int64)), int(m["need_type"].(int64))
+	oldAtt, oldHP := p.dfPanelPct()
 	s.dfMine(func(df *Dongfu, me *DFMember) bool {
 		p.syncDF(df, me)
 		d := p.df()
@@ -442,6 +473,7 @@ func onAddMemberXiuwei(s *Session, p *Player, m xym.Msg) {
 		reply()
 		return true
 	})
+	s.pushXiuweiPanel(p, oldAtt, oldHP)
 }
 
 // ---- 建设目标、升级、扩建、额外任务 ----
@@ -454,7 +486,11 @@ func onDongfuCurXiuwei(s *Session, p *Player, m xym.Msg) {
 			s.SendExt("DONGFU_PTO.S_SEND_DONGFU_WELFARE_INFO", df.welfareMsg(p))
 			return false
 		}
+		changed := df.curXiuwei() != t
 		df.CurXiuwei = t
+		if changed {
+			s.srv.pushDongfuEvent(df, dfPushTask, "本洞府发布了新的建设目标，可前往「差事」查看。")
+		}
 		s.SendExt("DONGFU_PTO.S_SEND_DONGFU_WELFARE_INFO", df.welfareMsg(p))
 		return true
 	})
@@ -467,6 +503,8 @@ func onUpgradeDongfu(s *Session, p *Player, m xym.Msg) {
 		if lv == 4 {
 			need = 100
 		}
+		now := nowUnix()
+		df.checkInvadeTimeout(now)
 		switch {
 		case !isAdmin(me.Position):
 			s.sendMsg("只有府主和洞主可以升级洞府。")
@@ -478,13 +516,17 @@ func onUpgradeDongfu(s *Session, p *Player, m xym.Msg) {
 			s.sendMsg("洞府元宝不足。")
 		case df.Yuanqi < 200*lv:
 			s.sendMsg("洞府元气不足。")
+		case df.Invade != nil && (df.Invade.status(now) == 0 || df.Invade.status(now) == 4):
+			s.sendMsg("当前已有正在进行的魔潮入侵，请先击退魔潮！")
 		default:
 			df.Gold -= 500 * lv
 			df.Yuanqi -= 200 * lv
-			df.Lv++
-			df.log(s.role.Name + " 把洞府升到了 " + dfNum(df.Lv) + " 级")
-			s.sendMsg("洞府升到了 " + dfNum(df.Lv) + " 级！")
+			df.startInvade(int(lv), time.Now().Hour(), now, true)
+			df.log(s.role.Name + " 发起洞府升级，触发了魔潮入侵")
+			s.srv.pushDongfuEvent(df, dfPushUpgrade, "本洞府发起升级，请在30分钟内击退魔潮。")
+			s.sendMsg("提升洞府等级触发了［魔潮入侵］，30分钟内成功击退魔潮即可完成升级！")
 			s.SendExt("DONGFU_PTO.S_SEND_DONGFU_INFO", s.srv.dfInfoMsg(df, me))
+			s.SendExt("DONGFU_PTO.S_SEND_DONGFU_JOB_INFO", s.dfJobInfo(p, df, me))
 			return true
 		}
 		s.SendExt("DONGFU_PTO.S_SEND_DONGFU_INFO", s.srv.dfInfoMsg(df, me))
@@ -579,14 +621,17 @@ func init() {
 		})
 	})
 	Handle("DONGFU_PTO.C_GET_DONGFU_WELFARE_INFO", func(s *Session, p *Player, m xym.Msg) {
+		oldAtt, oldHP := p.dfPanelPct()
 		s.dfMine(func(df *Dongfu, me *DFMember) bool {
 			p.syncDF(df, me)
 			p.saveLog(s)
 			s.SendExt("DONGFU_PTO.S_SEND_DONGFU_WELFARE_INFO", df.welfareMsg(p))
 			return true
 		})
+		s.pushXiuweiPanel(p, oldAtt, oldHP)
 	})
 	Handle("DONGFU_PTO.C_MEMBER_XIUWEI_LIST", func(s *Session, p *Player, m xym.Msg) {
+		oldAtt, oldHP := p.dfPanelPct()
 		s.srv.dongfu.do(func() bool {
 			df, me := s.srv.dongfu.of(s.role.UID)
 			p.syncDF(df, me)
@@ -594,5 +639,6 @@ func init() {
 		})
 		p.saveLog(s)
 		s.SendExt("DONGFU_PTO.S_SEND_MEMBER_XIUWEI_LIST", p.dfXiuweiList())
+		s.pushXiuweiPanel(p, oldAtt, oldHP)
 	})
 }

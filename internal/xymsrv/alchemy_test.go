@@ -238,12 +238,12 @@ func TestOneClickEquip(t *testing.T) {
 func TestYunyou(t *testing.T) {
 	c, p, _ := actWorld(t, "yy")
 	p.mu.Lock()
-	p.xianling(rand.New(rand.NewPCG(1, 1))).Contribute = 1000
+	p.xianling(rand.New(rand.NewPCG(1, 1))).Contribute = 2000
 	p.mu.Unlock()
 	c.sendExt("ETC_PTO.C_YUNYOU_SHOP_OPEN", nil)
 	m := c.expectExt("ETC_PTO.S_SEND_YUNYOU_SHOP_INFO")
 	l := m["list"].([]xym.Msg)
-	if len(l) != 9 || num(m, "money") != 1000 || num(m, "left_refresh") != yyFreeRefresh {
+	if len(l) != 9 || num(m, "money") != 2000 || num(m, "left_refresh") != yyFreeRefresh {
 		t.Fatalf("open %v", m)
 	}
 	soul := l[3] // 热点 5 星魂魄
@@ -251,18 +251,18 @@ func TestYunyou(t *testing.T) {
 	c.sendExt("ETC_PTO.C_YUNYOU_SHOP_BUY_GOODS", xym.Msg{"pos": 3, "type": soul["type"], "goods_id": soul["goods_id"]})
 	got := c.until(t, "ETC_PTO.S_REWARD_MSG")
 	info := got["ETC_PTO.S_SEND_YUNYOU_SHOP_INFO"]
-	if num(info, "money") != 1000-num(soul, "money") || num(info["list"].([]xym.Msg)[3], "state") != 1 ||
+	if num(info, "money") != 2000-num(soul, "money") || num(info["list"].([]xym.Msg)[3], "state") != 1 ||
 		p.Souls[int32(num(soul, "goods_id"))] != before+int32(num(soul, "num")) || p.Xianling.title() != 4 {
 		t.Fatalf("buy %v", info)
 	}
 	c.sendExt("ETC_PTO.C_YUNYOU_SHOP_BUY_GOODS", xym.Msg{"pos": 3, "type": soul["type"], "goods_id": soul["goods_id"]})
 	c.expectMsg(t, "卖完")
 	c.expectExt("ETC_PTO.S_SEND_YUNYOU_SHOP_INFO")
-	card := l[0] // 5 星护法 1500 > 剩余贡献
+	card := l[0] // 5 星护法 5000 > 剩余贡献
 	c.sendExt("ETC_PTO.C_YUNYOU_SHOP_BUY_GOODS", xym.Msg{"pos": 0, "type": card["type"], "goods_id": card["goods_id"]})
 	c.expectMsg(t, "贡献不足")
 	c.expectExt("ETC_PTO.S_SEND_YUNYOU_SHOP_INFO")
-	card = l[1] // 4 星护法 500
+	card = l[1] // 4 星护法 1000
 	c.sendExt("ETC_PTO.C_YUNYOU_SHOP_BUY_GOODS", xym.Msg{"pos": 1, "type": card["type"], "goods_id": card["goods_id"]})
 	got = c.until(t, "ETC_PTO.S_REWARD_MSG")
 	if r := got["ETC_PTO.S_REWARD_MSG"]["list"].([]xym.Msg); len(r) != 1 || num(r[0], "rtype") != rtCard || p.petByType(int32(num(card, "goods_id"))) == nil {

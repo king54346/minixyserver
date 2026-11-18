@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"turnrpg/internal/gamedata"
 	"turnrpg/internal/xym"
@@ -18,16 +19,16 @@ import (
 
 // Suit 是一件装备。
 type Suit struct {
-	ItemNum int32   `json:"itemnum"`
+	Saved   []int32 `json:"saved,omitempty"` // 备用炼神效果
 	Pos     int     `json:"pos"`
 	Type    int     `json:"type"`
 	Grade   int     `json:"grade"`
-	Exp     int32   `json:"exp,omitempty"`
-	Locked  bool    `json:"locked,omitempty"`
 	Stone   int     `json:"stone,omitempty"` // 镶嵌的宝石道具号（inlay.go）
+	ItemNum int32   `json:"itemnum"`
+	Exp     int32   `json:"exp,omitempty"`
 	Skill   int32   `json:"skill,omitempty"` // 炼神效果（神通号）
-	Saved   []int32 `json:"saved,omitempty"` // 备用炼神效果
 	shown   int32   // 显示用的炼神效果（套装激活后宝石提升的等级，inlay.go refreshShownSkills；不存档）
+	Locked  bool    `json:"locked,omitempty"`
 }
 
 // Book 是一本法术书（类型即法术号）。
@@ -49,9 +50,17 @@ const (
 
 var suitSlot = map[string]int{"ITK_WEAPON": 0, "ITK_SHIRT": 1, "ITK_SHOE": 2}
 
+// isSuitMaterial：装备表里的强化材料（2001 碎晶 / 2002 晶体 / 2003 精晶 / 2004 晶魄）。
+// 它们的 Kind 是占位的 ITK_WEAPON，只能当强化消耗品，不能穿戴（曾可被穿到武器栏，用户报）。
+func isSuitMaterial(typ int) bool { return typ >= 2001 && typ <= 2004 }
+
+// isBookMaterial：法术表里的强化材料（17000 炼法秘要 / 17001 悟法随想 / 17002 悟法心得 /
+// 17003 法术秘要 / 17004 法术奥义）：只能当强化消耗品，不能穿戴 / 当炼化、飞升材料。
+func isBookMaterial(typ int32) bool { return typ >= 17000 && typ <= 17004 }
+
 func (s *Suit) msg() xym.Msg {
 	return xym.Msg{"itemnum": s.ItemNum, "type": s.Type, "grade": s.Grade, "exp": s.Exp, "pos": s.Pos,
-		"extra_exp": baseExp[suitStar(s.Type)], "is_lock": s.Locked, "skill": s.shownSkill(), "stone": s.Stone}
+		"extra_exp": baseExp[suitStar(s.Type)], "is_lock": b2i(s.Locked), "skill": s.shownSkill(), "stone": s.Stone}
 }
 
 func (s *Suit) shownSkill() int32 {
@@ -63,7 +72,7 @@ func (s *Suit) shownSkill() int32 {
 
 func (b *Book) msg() xym.Msg {
 	return xym.Msg{"pos": b.Pos, "type": b.Type, "grade": b.Grade, "jxgrade": b.JX, "exp": b.Exp,
-		"extra_magic_exp": baseExp[magicStar(b.Type)], "is_lock": b.Locked}
+		"extra_magic_exp": baseExp[magicStar(b.Type)], "is_lock": b2i(b.Locked)}
 }
 
 func (it *Item) msg() xym.Msg {
@@ -225,8 +234,8 @@ func (p *Player) fixSlotGear(sl *Slot) bool {
 	var suits [3]int
 	for _, pos := range sl.Suit {
 		su := p.suitByPos(pos)
-		if su == nil || gamedata.Suits[su.Type] == nil {
-			continue
+		if su == nil || gamedata.Suits[su.Type] == nil || isSuitMaterial(su.Type) {
+			continue // 强化材料清出装备位（旧存档里被误穿的碎晶，登录自愈）
 		}
 		if k := suitSlot[gamedata.Suits[su.Type].Kind]; suits[k] == 0 {
 			suits[k] = pos
@@ -235,7 +244,8 @@ func (p *Player) fixSlotGear(sl *Slot) bool {
 	var books [2]int
 	n := 0
 	for _, pos := range sl.Book {
-		if pos != 0 && p.bookByPos(pos) != nil && n < 2 && (n == 0 || books[0] != pos) {
+		b := p.bookByPos(pos)
+		if pos != 0 && b != nil && !isBookMaterial(b.Type) && n < 2 && (n == 0 || books[0] != pos) {
 			books[n] = pos
 			n++
 		}
@@ -375,6 +385,7 @@ type bagDelta struct {
 	bookParts []int32 // 数量有变化的法术碎片
 	gains     []gain
 	mailed    []string // 背包满了放不下、改用邮件寄出的奖励编码（ZB / FS / DZ + 编号），sendDelta 统一寄
+	soul      int32    // 同名卡自动转化魂值（dupSoulGain），sendDelta 充入魂值池
 }
 
 var dropRe = regexp.MustCompile(`^([A-Z]+)(\d*)$`)
@@ -442,8 +453,22 @@ func (p *Player) giveCode(code string, cnt int32, rng *rand.Rand, d *bagDelta) {
 			}
 		case strings.HasSuffix(kind, "ZB"):
 			if l := gamedata.SuitsByStar[star]; len(l) > 0 {
+				pool := l
+				if star <= 2 {
+					// 1/2 星装备不再产出鞋子（战靴）
+					pool = make([]int, 0, len(l))
+					for _, id := range l {
+						if si := gamedata.Suits[id]; si != nil && si.Kind == "ITK_SHOE" {
+							continue
+						}
+						pool = append(pool, id)
+					}
+					if len(pool) == 0 {
+						pool = l
+					}
+				}
 				for range cnt {
-					p.giveSuit(l[rng.IntN(len(l))], d)
+					p.giveSuit(pool[rng.IntN(len(pool))], d)
 				}
 			}
 		case strings.HasSuffix(kind, "FS"):
@@ -550,14 +575,25 @@ func (p *Player) soulsMsg(types []int32) xym.Msg {
 }
 
 // giveCard / giveSuit / giveBook：背包满了就改用邮件寄（d.mailed），奖励列表照样列出，免得东西丢了、
-// 十连弹窗凑不满 10 格显示成「载入中」。同名卡并入不占格子。
+// 十连弹窗凑不满 10 格显示成「载入中」。同名卡自动融魂不占格子：并入本体得神通点 + 魂值，
+// 当前没有本体的定向奖励补回本体；招募历史自动融魂由招募路径单独处理。
 func (p *Player) giveCard(typ int32, d *bagDelta) {
+	if p.petByType(typ) != nil {
+		d.soul += p.dupSoulGain(typ)
+	}
+	p.mergeCard(typ, d)
+}
+
+// mergeCard 发一张卡牌但不发同名卡自动转化魂值（化形用：花元神和魂值合成同名卡并入本体，不是获得）。
+func (p *Player) mergeCard(typ int32, d *bagDelta) {
 	if len(p.Pets) >= p.BagLimit[bagPet] && p.petByType(typ) == nil {
 		d.mailed = append(d.mailed, "DZ"+strconv.Itoa(int(typ)))
 		d.gains = append(d.gains, gain{rtCard, int(typ), 1})
 		return
 	}
-	d.pets = append(d.pets, p.gainPet(typ)) // 已有同类护法就并进去（pet_talent.go）
+	if pet := p.receivePet(typ); pet != nil {
+		d.pets = append(d.pets, pet) // 已有同类护法就并进去（pet_talent.go）；同名自动转化不进背包
+	}
 	d.gains = append(d.gains, gain{rtCard, int(typ), 1})
 }
 
@@ -627,23 +663,35 @@ func (s *Session) sendDelta(p *Player, d *bagDelta) []xym.Msg {
 		for _, x := range d.suits {
 			l = append(l, x.msg())
 		}
-		s.SendExt("ITEM_PTO.S_UPDATE_SUIT", xym.Msg{"is_all": 0, "suits": l})
+		s.sendUpdates("ITEM_PTO.S_UPDATE_SUIT", "suits", l)
 	}
 	if len(d.books) > 0 {
 		var l []xym.Msg
 		for _, x := range d.books {
 			l = append(l, x.msg())
 		}
-		s.SendExt("ITEM_PTO.S_UPDATE_BOOK", xym.Msg{"is_all": 0, "books": l})
+		s.sendUpdates("ITEM_PTO.S_UPDATE_BOOK", "books", l)
 	}
 	if len(d.pets) > 0 {
 		var full, brief []xym.Msg
+		seen := map[int32]bool{}
 		for _, pet := range d.pets {
+			if seen[pet.NpcNum] {
+				continue
+			}
+			seen[pet.NpcNum] = true
 			full = append(full, p.petFull(pet))
 			brief = append(brief, p.petBrief(pet))
 		}
-		s.SendExt("PET_PTO.S_UPDATE_PET", xym.Msg{"is_all": 0, "pets": full})
-		s.SendExt("PET_PTO.S_PET_LIST", xym.Msg{"is_all": 0, "pets": brief})
+		for _, pet := range p.fightRelatePets(d.pets) {
+			if seen[pet.NpcNum] {
+				continue
+			}
+			seen[pet.NpcNum] = true
+			full = append(full, p.petFull(pet))
+		}
+		s.sendUpdates("PET_PTO.S_UPDATE_PET", "pets", full)
+		s.sendUpdates("PET_PTO.S_PET_LIST", "pets", brief)
 	}
 	if len(d.souls) > 0 {
 		s.SendExt("PET_PTO.S_UPDATE_CARD", p.soulsMsg(d.souls))
@@ -654,22 +702,48 @@ func (s *Session) sendDelta(p *Player, d *bagDelta) []xym.Msg {
 	if len(d.bookParts) > 0 {
 		s.SendExt("ITEM_PTO.S_UPDATE_BOOK_PART", p.bookPartsMsg(d.bookParts))
 	}
+	if d.soul > 0 { // 同名卡自动转化魂值（pet_talent.go dupSoulGain）充入魂值池
+		s.roleUpdate(func(ro *Role) bool { ro.SoulExp += d.soul; return true }, "soulexp")
+	}
 	if len(d.mailed) > 0 {
 		items := map[string]int32{}
+		full := map[int]bool{}
 		for _, code := range d.mailed {
 			items[code]++
+			switch code[:2] {
+			case "ZB":
+				full[bagSuit] = true
+			case "FS":
+				full[bagBook] = true
+			}
+		}
+		now := time.Now()
+		for _, t := range []int{bagSuit, bagBook} { // 连续开箱时每30秒最多弹一次扩容提示
+			if full[t] && p.bagExpandPrice(t) > 0 && now.Sub(s.bagFullNotice[t]) >= 30*time.Second {
+				s.bagFullNotice[t] = now
+				s.SendExt("TASK_PTO.S_BAG_FULL", xym.Msg{"type": t, "state": 1})
+			}
 		}
 		d.mailed = nil
-		if _, err := s.srv.SendMail(s.role.UID, MailSpec{Title: "背包已满", Text: "背包已满，放不下的物品已通过邮件寄给你，清理背包后在邮件里领取。", Items: items}); err != nil {
+		notify, err := s.srv.sendOverflowMail(s.role.UID, items)
+		if err != nil {
 			s.logErr("overflow mail", err)
-		} else {
+		} else if now.Sub(s.bagFullNotice[0]) >= 30*time.Second {
+			s.bagFullNotice[0] = now
 			s.retMsg("背包已满，放不下的物品已寄到邮件。")
 		}
+		if err == nil && notify {
+			s.sendMailNum()
+		}
 	}
-	// 同类合并成一项（同一种物品多次掉落合计数量）
+	return mergeRewardGains(d.gains)
+}
+
+// 同类合并成一项（同一种物品多次掉落合计数量）。
+func mergeRewardGains(gains []gain) []xym.Msg {
 	merged := map[[2]int]int32{}
 	var order [][2]int
-	for _, g := range d.gains {
+	for _, g := range gains {
 		k := [2]int{g.rtype, g.typ}
 		if _, ok := merged[k]; !ok {
 			order = append(order, k)

@@ -24,15 +24,31 @@ func TestDongfuGank(t *testing.T) {
 		t.Fatalf("gank list %v", l)
 	}
 	a.sendExt("DONGFU_PTO.C_GANK_DONGFU", xym.Msg{"dongfu_id": gankNPCBase})
+	a.expectExt("ETC_PTO.S_SEND_NO_CACHE_MSG")
 	info := a.expectExt("DONGFU_PTO.S_SEND_GANK_FIGHT_INFO")
 	if num(info, "status") != 1 || num(info, "side") != 1 || len(info["guard"].([]xym.Msg)) != 3 {
 		t.Fatalf("gank info %v", info)
 	}
 	df := dfOf(srv, pa.UID)
 	lingqi := df.Lingqi
+	// 每人每场最多 6 次、间隔 30 秒：第 1 次后马上再打被拒
+	a.sendExt("DONGFU_PTO.C_START_GANK_FIGHT", xym.Msg{"type": dfGuardTypes[0]})
+	a.untilSkipMsg(t, "ETC_PTO.S_REWARD_MSG")
+	a.sendExt("DONGFU_PTO.C_START_GANK_FIGHT", xym.Msg{"type": dfGuardTypes[0]})
+	if g := a.untilSkipMsg(t, "DONGFU_PTO.S_SEND_GANK_FIGHT_INFO")["DONGFU_PTO.S_SEND_GANK_FIGHT_INFO"]; num(g, "challenge_cd") <= 0 || num(g, "challenge_times") != gankUserMax-1 {
+		t.Fatalf("cd %v", g)
+	}
+	resetTimes := func() { // 单人测试打不满 9 场：清掉本人的次数和间隔
+		u := df.War.Gank.user(pa.UID)
+		u.Times, u.Last = 0, 0
+	}
 	won := false
 	for range 12 {
-		for _, gt := range dfGuardTypes {
+		for gi, gt := range dfGuardTypes {
+			if srv.dongfu.defenderGank(df).Num[gi] == 0 {
+				continue
+			}
+			resetTimes()
 			a.sendExt("DONGFU_PTO.C_START_GANK_FIGHT", xym.Msg{"type": gt})
 			got := a.untilSkipMsg(t, "ETC_PTO.S_REWARD_MSG")
 			if g := got["DONGFU_PTO.S_SEND_GANK_FIGHT_INFO"]; g != nil && num(g, "status") == 2 {
@@ -58,6 +74,7 @@ func TestDongfuGank(t *testing.T) {
 	}
 	gold := df.Gold
 	a.sendExt("DONGFU_PTO.C_GANK_DONGFU", xym.Msg{"dongfu_id": gankNPCBase + 1})
+	a.expectExt("ETC_PTO.S_SEND_NO_CACHE_MSG")
 	a.expectExt("DONGFU_PTO.S_SEND_GANK_FIGHT_INFO")
 	if df.Gold != gold-100 {
 		t.Fatalf("second gank cost: %d -> %d", gold, df.Gold)
@@ -84,18 +101,8 @@ func TestDongfuCave(t *testing.T) {
 	if g := a.expectExt("DONGFU_PTO.S_SEND_CAVE_GAME_STATION_INFO")["gate_list"].([]xym.Msg); len(g) != caveGates {
 		t.Fatalf("station %v", g)
 	}
-	won := false
-	for range 5 {
-		a.sendExt("DONGFU_PTO.C_START_CAVE_FIGHT", xym.Msg{"gate": 5, "gate_pos": 1})
-		got := a.untilSkipMsg(t, "ETC_PTO.S_REWARD_MSG")
-		if num(got["ETC_PTO.S_REWARD_MSG"], "type") == 2 {
-			won = true
-			break
-		}
-	}
-	if !won {
-		t.Fatal("never won cave fight")
-	}
+	a.sendExt("DONGFU_PTO.C_START_CAVE_FIGHT", xym.Msg{"gate": 5, "gate_pos": 1})
+	a.expectExt("DONGFU_PTO.S_SEND_CAVE_GAME_GATE_INFO")
 	srv.dongfu.do(func() bool {
 		c := srv.dongfu.cave(1)
 		if c.Gates[5][0].UID != pa.UID || c.Scores[df.ID] != 3 {

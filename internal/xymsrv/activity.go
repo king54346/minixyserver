@@ -38,6 +38,12 @@ func attrVal(ro *Role, name string) any {
 		return ro.Grade
 	case "exp":
 		return ro.Exp
+	case "xiuwei", "tot_xiuwei":
+		return ro.Xiuwei
+	case "xgrade":
+		return int64(ro.XGrade)
+	case "stop_upgrade":
+		return int64(ro.StopUpgrade)
 	case "next_exp":
 		return nextExp(ro.Grade)
 	}
@@ -115,7 +121,7 @@ func randStar(w [5]int, rng *rand.Rand) int {
 //   - 8 法术书：「站位#法术号 等级 精修buff 精修次数 天将阶:…」（精修 buff = 法术表 jingxiu_buff，没精修为 0）；
 //   - 9 装备：「站位#装备位 装备号 强化等级 宝石道具号 天将阶:…」。
 func recordParams(teams ...[]*battle.Fighter) []xym.Msg {
-	var cards, books, suits []string
+	var cards, books, suits, frames []string
 	for _, team := range teams {
 		for _, f := range team {
 			c := fmt.Sprintf("%d:%d:%d:%d", f.Pos, max(f.Grade, 1), f.Magic, max(f.MagicLv, 1))
@@ -123,6 +129,9 @@ func recordParams(teams ...[]*battle.Fighter) []xym.Msg {
 				c += fmt.Sprintf(":%d", t)
 			}
 			cards = append(cards, c)
+			// 每个单位都发（没边框发 0）：客户端 diyFrameDatas 是模块级表、跨战斗不清，
+			// 必须逐个站位覆盖，否则上一场的边框会残留到这张卡上。
+			frames = append(frames, fmt.Sprintf("%d:%d", f.Pos, f.FrameType))
 			var bs []string
 			for i, b := range f.Books {
 				tj := 0
@@ -151,6 +160,11 @@ func recordParams(teams ...[]*battle.Fighter) []xym.Msg {
 		}
 	}
 	out := []xym.Msg{{"idx": 4, "value": strings.Join(cards, "|")}}
+	// idx 14 = 客户端的边框通道（war/netwar.lua：idx 12 是最大生命、14 才填 diyFrameDatas）。
+	// 之前发在 12 上，客户端按"站位"补边框，换位后就会跑到别人身上；现在走原生 14，按卡绑定。
+	if len(frames) > 0 {
+		out = append(out, xym.Msg{"idx": 14, "value": strings.Join(frames, "|")})
+	}
 	var powers []string
 	for _, team := range teams {
 		for _, f := range team {
@@ -204,26 +218,10 @@ func (s *Session) fightRecordW(rid, name2 string, level2, w2 int, team1, team2 [
 	})
 }
 
-// prestige 是战报里我方的威望（S_FIGHT_RECORD.w1，战斗界面顶上显示）。客户端在 w1 为 0 时把我方所有卡的
-// skillfull 清零（war/netwar.lua），神通满的徽标就出不来。官方威望来自成就（本服没有），估计为
-// 人物等级 × 10 + 通关过的关卡数。
+// prestige is evaluated from current role metadata and current ranking positions.
 func (s *Session) prestige() int {
-	return prestigeOf(s.role.Grade, s.player)
-}
-
-// prestigeOf：人物等级 × 10 + p 通关过的关卡数（p 可为 nil）。
-func prestigeOf(grade int, p *Player) int {
-	n := grade * 10
-	if p != nil {
-		for _, pr := range p.Prog {
-			if pr != nil {
-				for _, t := range pr.Gates {
-					if t > 0 {
-						n++
-					}
-				}
-			}
-		}
+	if s.srv == nil {
+		return prestigeOf(s.role, s.player)
 	}
-	return n
+	return s.srv.prestigeOf(s.role, s.player)
 }

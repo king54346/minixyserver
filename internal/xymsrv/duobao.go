@@ -233,7 +233,7 @@ func onDuobaoFight(s *Session, p *Player, m xym.Msg) {
 	team2 := battle.CloneTeam(foe.Team)
 	r1, r2 := battle.CloneTeam(team1), battle.CloneTeam(team2)
 	rng := s.actRng()
-	res := s.simulate(p, team1, team2, [2]int32{p.leaderSkill(), 0}, foe.Zf, rng)
+	res := s.simulateVersus(p, team1, team2, [2]int32{p.leaderSkill(), 0}, foe.Zf, foe.W, rng)
 	d.Fights++
 	p.track(evDuobao, 1)
 	if res.Win {
@@ -299,9 +299,11 @@ func onUseTicket(s *Session, p *Player, m xym.Msg) {
 		case 0:
 			var l []int
 			for _, id := range gamedata.SuitsByStar[star] {
-				if gamedata.Suits[id].Kind != "ITK_SHOE" { // 鞋只出自解忧
-					l = append(l, id)
+				// 金紫鞋子（4/5 星）可兑（用户 2026-10-30 要求）；低星鞋仍只出自解忧
+				if gamedata.Suits[id].Kind == "ITK_SHOE" && star < 4 {
+					continue
 				}
+				l = append(l, id)
 			}
 			if len(l) > 0 {
 				p.giveSuit(l[rng.IntN(len(l))], delta)

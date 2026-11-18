@@ -1,6 +1,7 @@
 package xymsrv
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 	"time"
@@ -20,28 +21,34 @@ import (
 //
 // 本服：除了真实洞府，再给 5 个野外洞府当目标（守卫是论道假玩家的阵容），保证单人也能玩。
 // 估计：争夺持续 30 分钟；每个界门援军 3；三个界门援军都打光即进攻方胜，夺走对方灵气池 20%（野外洞府 300×等级）；
-// 每天首次争夺免费，之后每次 100 洞府元宝，最多 5 次；停战花 100×等级 洞府元宝，当天不能被争夺；
+// 每天首次争夺免费，之后每次 100 洞府元宝，每天最多 10 次（用户）；每场争夺每人最多挑战 6 次、两次之间隔 30 秒（用户）；停战花 100×等级 洞府元宝，当天不能被争夺；
 // 阵亡护法本场不能再出战，复活每次 20 元宝（前 3 次免费）；燃烧怒焰最多 +15%。
 
 const (
 	gankDuration = 1800
 	gankGuardNum = 3
-	gankMaxTimes = 5
+	gankMaxTimes = 10 // 每个洞府每天最多发起几次争夺
+	gankUserMax  = 6  // 每场争夺每人最多挑战几次
+	gankUserCD   = 30 // 每人两次挑战的间隔（秒）
 	gankNPCBase  = 800001
 	gankNPCCount = 5
+	// gankResultShow 是「分出胜负后，差事页那条争夺事件还显示多久」（秒）。
+	// 争夺的奖励（灵气）在结算那一刻就已经发完了，事件条只是给玩家看一眼结果，
+	// 之前没有过期逻辑，胜利/失败的事件会一直挂在差事页上不消失。
+	gankResultShow = 300
 )
 
 var gankNPCNames = []string{"幽冥古洞", "落霞仙府", "青丘狐穴", "黑风山洞", "盘丝妖窟"}
 
 type DFGank struct {
-	Target int32                   `json:"target"` // 对方洞府号（野外洞府 800001 起）
-	Side   int                     `json:"side"`   // 1 进攻 2 防守
-	Type   int                     `json:"type"`   // 1 争夺 2 反击
+	Users  map[int32]*DFInvadeUser `json:"users,omitempty"`
+	Num    [3]int                  `json:"num"`  // 防守方三个界门的援军（只记在防守方 / 进攻野外时记在进攻方）
+	Side   int                     `json:"side"` // 1 进攻 2 防守
+	Type   int                     `json:"type"` // 1 争夺 2 反击
 	Start  int64                   `json:"start"`
 	End    int64                   `json:"end,omitempty"` // 分出胜负的时刻
 	Winner int                     `json:"winner,omitempty"`
-	Num    [3]int                  `json:"num"` // 防守方三个界门的援军（只记在防守方 / 进攻野外时记在进攻方）
-	Users  map[int32]*DFInvadeUser `json:"users,omitempty"`
+	Target int32                   `json:"target"` // 对方洞府号（野外洞府 800001 起）
 	Stolen int32                   `json:"stolen,omitempty"`
 }
 
@@ -124,7 +131,7 @@ func (d *Dongfus) gankTargetOf(id int32) *gankTarget {
 }
 
 func (t *gankTarget) msg() xym.Msg {
-	return xym.Msg{"dongfu_id": t.id, "name": t.name, "server_name": "细水长流", "member_num": t.num, "size": t.size,
+	return xym.Msg{"dongfu_id": t.id, "name": t.name, "server_name": "再续前缘", "member_num": t.num, "size": t.size,
 		"icon": t.icon, "lv": t.lv, "rank": 0}
 }
 
@@ -140,6 +147,19 @@ func (s *Session) gankList(df *Dongfu) {
 	s.SendExt("DONGFU_PTO.S_SEND_GANK_LIST", xym.Msg{"list": list, "gank_times": df.war().Times})
 }
 
+// gankExpired 判断一场争夺是否该从差事页消失：分出胜负后只留 gankResultShow 秒，
+// 超时没分出胜负（防守方守住）也只留同样的宽限，不再挂满 24 小时。
+func gankExpired(g *DFGank, now int64) bool {
+	if g == nil {
+		return true
+	}
+	end := g.End
+	if end == 0 {
+		end = g.Start + gankDuration
+	}
+	return now > end+gankResultShow
+}
+
 // gankJob 填差事页的争夺事件。
 func (srv *Server) gankJob(df *Dongfu, m xym.Msg) {
 	if df.War == nil || df.War.Gank == nil {
@@ -147,8 +167,11 @@ func (srv *Server) gankJob(df *Dongfu, m xym.Msg) {
 	}
 	g := df.War.Gank
 	now := nowUnix()
+	if gankExpired(g, now) {
+		return
+	}
 	st := g.status(now)
-	if st == 0 || g.Winner == 0 && now > g.Start+gankDuration+86400 {
+	if st == 0 {
 		return
 	}
 	t := srv.dongfu.gankTargetOf(g.Target)
@@ -156,7 +179,7 @@ func (srv *Server) gankJob(df *Dongfu, m xym.Msg) {
 		return
 	}
 	m["gank_status"], m["gank_side"], m["gank_type"] = st, g.Side, g.Type
-	m["gank_dongfu_icon"], m["gank_dongfu_name"], m["gank_server_name"] = t.icon, t.name, "细水长流"
+	m["gank_dongfu_icon"], m["gank_dongfu_name"], m["gank_server_name"] = t.icon, t.name, "再续前缘"
 	if st == 1 {
 		m["gank_left_time"] = g.Start + gankDuration - now
 	} else if g.End > 0 {
@@ -209,7 +232,7 @@ func (s *Session) gankInfo(p *Player, df *Dongfu) xym.Msg {
 		die = append(die, xym.Msg{"pos": pos})
 	}
 	return xym.Msg{"status": g.status(nowUnix()), "side": g.Side, "guard": guards, "lingqi": df.Lingqi,
-		"challenge_times": u.Times, "challenge_cd": 0, "free_relive_times": max(0, invadeFreeLive-u.Relive), "die_list": die}
+		"challenge_times": max(0, gankUserMax-u.Times), "challenge_cd": u.cd(nowUnix()), "free_relive_times": max(0, invadeFreeLive-u.Relive), "die_list": die}
 }
 
 func (s *Session) startGank(p *Player, target int32, typ int) {
@@ -256,8 +279,10 @@ func (s *Session) startGank(p *Player, target int32, typ int) {
 			ow.Gank = &DFGank{Target: df.ID, Side: 2, Type: typ, Start: now, Num: [3]int{gankGuardNum, gankGuardNum, gankGuardNum}}
 			ow.Enemies = addUniq(ow.Enemies, df.ID)
 			o.log("洞府「" + df.Name + "」对本洞府发起了争夺")
+			s.srv.pushDongfuEvent(o, dfPushGankDefense, "洞府「"+df.Name+"」对本洞府发起了争夺。")
 		}
 		df.log(s.role.Name + " 对「" + t.name + "」发起了争夺")
+		s.srv.pushDongfuEvent(df, dfPushGankAttack, "本洞府对「"+t.name+"」发起了争夺。")
 		s.SendExt("DONGFU_PTO.S_SEND_GANK_FIGHT_INFO", s.gankInfo(p, df))
 		return true
 	})
@@ -282,6 +307,10 @@ func (s *Session) gankFight(p *Player, typ string, help bool) {
 			s.sendMsg("该守卫已被击破！")
 		case help && d.defenderGank(df).Num[i] >= gankGuardNum:
 			s.sendMsg("该界门援军已满。")
+		case g.user(s.role.UID).Times >= gankUserMax:
+			s.sendMsg("本次争夺的挑战次数已用完。")
+		case g.user(s.role.UID).cd(nowUnix()) > 0:
+			s.sendMsg(fmt.Sprintf("挑战太频繁了，请%d秒后再战。", g.user(s.role.UID).cd(nowUnix())))
 		default:
 			ok, target, dead, rev = true, g.Target, append(dead, g.user(s.role.UID).Dead...), df.war().Revenge
 			if help {
@@ -328,6 +357,7 @@ func (s *Session) gankFight(p *Player, typ string, help bool) {
 		}
 		u := g.user(s.role.UID)
 		u.Times++
+		u.Last = nowUnix()
 		for _, f := range r1 {
 			if !alive[f.Pos] {
 				u.Dead = append(u.Dead, f.Pos)
@@ -378,7 +408,7 @@ func (s *Session) gankFight(p *Player, typ string, help bool) {
 
 func onGankFightInfo(s *Session, p *Player, m xym.Msg) {
 	s.dfMine(func(df *Dongfu, me *DFMember) bool {
-		if df.war().Gank == nil {
+		if g := df.war().Gank; g == nil || gankExpired(g, nowUnix()) {
 			s.sendMsg("当前没有争夺。")
 			return false
 		}

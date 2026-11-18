@@ -1,11 +1,16 @@
 package xymsrv
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"turnrpg/internal/xym"
@@ -36,24 +41,43 @@ import (
 // 例：curl -X POST localhost:28418/mail --data-binary @mail.json（mail.json 存成 UTF-8；Windows 命令行里直接写中文会乱码）
 
 type mailReq struct {
-	To    int32            `json:"to"`
+	Items map[string]int32 `json:"items"`
+	UIDs  []int32          `json:"uids,omitempty"`
 	Title string           `json:"title"`
 	Text  string           `json:"text"`
+	To    int32            `json:"to"`
 	Gold  int32            `json:"gold"`
 	Cash  int32            `json:"cash"`
 	Soul  int32            `json:"soul"`
-	Items map[string]int32 `json:"items"`
 	Star  bool             `json:"star"`
 }
 
 // AdminHandler 是管理接口的 HTTP 处理器。
 func (srv *Server) AdminHandler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /chat", func(w http.ResponseWriter, r *http.Request) {
+		srv.chat.Lock()
+		out := []map[string]any{}
+		for ch, list := range srv.chat.Hist {
+			for _, m := range list {
+				out = append(out, map[string]any{
+					"channel": ch,
+					"sn":      m.SN,
+					"uid":     m.UID,
+					"name":    m.Name,
+					"msg":     m.Msg,
+					"time":    m.TS,
+				})
+			}
+		}
+		srv.chat.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"count": len(out), "list": out})
+	})
 	mux.HandleFunc("GET /players", func(w http.ResponseWriter, r *http.Request) {
 		type row struct {
-			UID    int32  `json:"uid"`
 			Name   string `json:"name"`
 			Grade  int    `json:"grade"`
+			UID    int32  `json:"uid"`
 			Online bool   `json:"online"`
 		}
 		var out []row
@@ -68,6 +92,7 @@ func (srv *Server) AdminHandler() http.Handler {
 		sort.Slice(out, func(i, j int) bool { return out[i].UID < out[j].UID })
 		writeJSON(w, http.StatusOK, out)
 	})
+	srv.gmRecordHandlers(mux)
 	mux.HandleFunc("GET /records", func(w http.ResponseWriter, r *http.Request) {
 		uid, _ := strconv.Atoi(r.URL.Query().Get("uid"))
 		writeJSON(w, http.StatusOK, srv.listRecords(r.URL.Query().Get("day"), int32(uid)))
@@ -129,8 +154,19 @@ func (srv *Server) AdminHandler() http.Handler {
 				return
 			}
 		}
-		n, err := srv.SendMail(req.To, MailSpec{Title: req.Title, Text: req.Text, Gold: req.Gold, Cash: req.Cash,
-			Soul: req.Soul, Items: req.Items, Star: req.Star})
+		if (req.To == -1) != (len(req.UIDs) > 0) || len(req.UIDs) > 10000 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid mail recipients"})
+			return
+		}
+		spec := MailSpec{Title: req.Title, Text: req.Text, Gold: req.Gold, Cash: req.Cash,
+			Soul: req.Soul, Items: req.Items, Star: req.Star}
+		var n int
+		var err error
+		if req.To == -1 {
+			n, err = srv.sendMailToUIDs(req.UIDs, spec)
+		} else {
+			n, err = srv.SendMail(req.To, spec)
+		}
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -167,7 +203,93 @@ func (srv *Server) AdminHandler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]int32{"uid": uid})
 	})
 	srv.gmHandlers(mux) // GM 工具：/catalog /player /role /kick（gm.go）
-	return mux
+	srv.gmRegistrationHandlers(mux)
+	srv.gmOpsHandlers(mux)
+	srv.gmGameRuleHandlers(mux)
+	return auditWrap(srv.cfg.GMLog, mux)
+}
+
+// auditWrap 是 GM 操作审计：把每个管理接口请求（方法、路径、请求体、响应码）写进
+// slog 和 gm.log（JSON Lines，每行一条），供事后追溯谁改了什么。请求体里的 pwd
+// 会打码，其余原样记录（截断到 8KB）。
+func auditWrap(logPath string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
+			if len(body) > 1<<20 {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request exceeds 1 MiB"})
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		aw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(aw, r)
+		clean := sanitizeBody(body)
+		if runes := []rune(clean); len(runes) > 8192 {
+			clean = string(runes[:8192]) + "…"
+		}
+		logGMEvent(logPath, r.Method+" "+r.URL.Path, r.RemoteAddr, aw.status, clean)
+	})
+}
+
+// logGMEvent 写一条 GM 相关审计流水（slog + gm.log JSON Lines）：管理接口操作、
+// 福利邮件被玩家领取（h_mail.go）等，供追溯谁发的、谁领的。
+func logGMEvent(logPath, op, remote string, status int, body string) {
+	slog.Info("gm op", "op", op, "remote", remote, "status", status, "body", body)
+	if logPath == "" {
+		return
+	}
+	rec := map[string]any{"t": time.Now().Format(time.RFC3339), "op": op, "remote": remote, "status": status}
+	if body != "" {
+		rec["body"] = body
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		slog.Error("gm audit log", "path", logPath, "err", err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		slog.Error("gm audit log", "path", logPath, "err", err)
+	}
+}
+
+// sanitizeBody 把请求体整理成审计文本：JSON 里的 pwd 打码，非 JSON 截断到 2KB（按字符切）。
+func sanitizeBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal(body, &m) == nil {
+		for _, k := range []string{"pwd", "password", "code"} {
+			if _, ok := m[k]; ok {
+				m[k] = "***"
+			}
+		}
+		if b, err := json.Marshal(m); err == nil {
+			return string(b)
+		}
+	}
+	s := string(body)
+	if r := []rune(s); len(r) > 2048 {
+		s = string(r[:2048]) + "…"
+	}
+	return s
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

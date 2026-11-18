@@ -38,13 +38,13 @@ type DFShop struct {
 }
 
 type DFGood struct {
+	Bidders []int32 `json:"bidders,omitempty"`
+	BidEnd  int64   `json:"bid_end,omitempty"`
 	Goods   int32   `json:"goods"`
 	Lingqi  int32   `json:"lingqi"`
 	BidUID  int32   `json:"bid_uid,omitempty"`
 	BidLQ   int32   `json:"bid_lq,omitempty"`   // 当前最高价（灵气计）
 	BidGold bool    `json:"bid_gold,omitempty"` // 最高价是元宝出的
-	BidEnd  int64   `json:"bid_end,omitempty"`
-	Bidders []int32 `json:"bidders,omitempty"`
 	Sold    bool    `json:"sold,omitempty"`
 }
 

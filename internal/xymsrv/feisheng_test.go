@@ -89,3 +89,35 @@ func TestFeishengMerge(t *testing.T) {
 		t.Fatalf("upgraded copies %d, existing +%d, removed %v", n, existing.TLAdd, got["PET_PTO.S_REMOVE_PET"])
 	}
 }
+
+func TestFeishengBothDeployedAndMigration(t *testing.T) {
+	_, p, _ := actWorld(t, "fsboth")
+	old := p.addPet(35023)
+	old.Grade, old.TLAdd = 40, 3
+	rising := p.addPet(34007)
+	rising.TLAdd = 4
+	a := &Lineup{No: 1, Leader: 7}
+	a.Slots[5] = &Slot{Pet: old.BagPos, Suit: [3]int{11}}
+	a.Slots[6] = &Slot{Pet: rising.BagPos, Suit: [3]int{12}}
+	b := &Lineup{No: 2, Leader: 1}
+	b.Slots[0] = &Slot{Pet: rising.BagPos, Book: [2]int{21}}
+	p.Lineups = []*Lineup{a, b}
+	p.feishengSplit(rising, gamedata.Pets[34007], 5)
+	keep, gone := p.feishengMerge(rising)
+	if keep != old || gone != rising || old.TLAdd != 4 || a.Slots[6].Pet != 0 || a.Leader != 6 || a.Slots[5].Suit[0] != 11 || b.Slots[0].Pet != old.BagPos || b.Slots[0].Book[0] != 21 {
+		t.Fatalf("merge/formation mismatch: keep=%+v a=%+v b=%+v", keep, a, b)
+	}
+	if p.petByNpc(rising.NpcNum) != nil {
+		t.Fatal("merged card remains")
+	}
+	extra := p.addPet(35023)
+	extra.TLAdd = 2
+	extra.Grade = 1
+	a.Slots[6] = &Slot{Pet: extra.BagPos}
+	if !p.mergeDuplicates() || old.TLAdd != 7 || a.Slots[6].Pet != 0 {
+		t.Fatal("deployed legacy duplicate not repaired")
+	}
+	if p.mergeDuplicates() || old.TLAdd != 7 {
+		t.Fatal("migration double counted")
+	}
+}

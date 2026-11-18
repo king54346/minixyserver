@@ -30,11 +30,9 @@ import (
 // view/MapRecordView.lua「看看高手们是如何以最低战力通过此关的」：rdtype 1 过关录像、2 / 3 两档成就录像；
 // 「播放」发 FIGHT_PTO.C_PLAY_RECORD{type 2 = REP_TYPE_TASK, gid, ttype, rdtype}）：
 //   - 每关每档存全服战力最低的一场胜利（通关、成就达成时比较），播放时原样重发 S_FIGHT_RECORD。
-//   - 每条录像单独存一行（store 的玩家存档接口，uid = gateRecBase + gid×8 + type×4 + rdtype），不进全服大块存档。
+//   - 每条录像单独存一行（存档库 records 表，kind gate，key = gid×8 + type×4 + rdtype，owner 索引按玩家列出）。
 //
 // 估计：成就挑战与普通挑战一样消耗关卡体力（赢输都扣）；失败不提示具体没达成哪条。
-
-const gateRecBase = 1_000_000_000
 
 // gateStar 是关卡 gid 的星数：没通关 0，通关 1，成就挑战成功后 2 / 3。
 func (pr *Progress) gateStar(gid int) int {
@@ -59,16 +57,22 @@ type gateRecord struct {
 
 var gateRecMu sync.Mutex
 
-func gateRecKey(gid, typ, rd int) int32 { return int32(gateRecBase + gid*8 + typ*4 + rd) }
+// gateRecKey 是关卡录像在 records 表（kind gate）里的 key。
+func gateRecKey(gid, typ, rd int) int64 { return int64(gid*8 + typ*4 + rd) }
 
 func loadGateRecord(st store.Store, gid, typ, rd int) *gateRecord {
+	return loadRecord(st, store.RecordGate, gateRecKey(gid, typ, rd))
+}
+
+// loadRecord 读一条录像（关卡录像、取经试炼录像，存档库 records 表）。
+func loadRecord(st store.Store, kind string, key int64) *gateRecord {
 	if st == nil {
 		return nil
 	}
-	data, err := st.LoadPlayer(gateRecKey(gid, typ, rd))
+	data, err := st.LoadRecord(kind, key)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
-			slog.Error("load gate record", "gid", gid, "err", err)
+			slog.Error("load record", "kind", kind, "key", key, "err", err)
 		}
 		return nil
 	}
@@ -77,6 +81,15 @@ func loadGateRecord(st store.Store, gid, typ, rd int) *gateRecord {
 		return nil
 	}
 	return r
+}
+
+// saveRecord 存一条录像（owner = 录像主人）。
+func saveRecord(st store.Store, kind string, key int64, r *gateRecord) error {
+	data, err := json.Marshal(r)
+	if err == nil {
+		err = st.SaveRecord(kind, key, r.UID, data)
+	}
+	return err
 }
 
 // offerGateRecord：战力比已存的低（或还没有）就存成该档录像。
@@ -90,11 +103,7 @@ func (s *Session) offerGateRecord(gid, typ, rd int, r *gateRecord) {
 	if old := loadGateRecord(st, gid, typ, rd); old != nil && old.FP <= r.FP {
 		return
 	}
-	data, err := json.Marshal(r)
-	if err == nil {
-		err = st.SavePlayer(gateRecKey(gid, typ, rd), data)
-	}
-	if err != nil {
+	if err := saveRecord(st, store.RecordGate, gateRecKey(gid, typ, rd), r); err != nil {
 		slog.Error("save gate record", "gid", gid, "err", err)
 	}
 }
@@ -139,6 +148,7 @@ func (s *Session) playGateRecord(m xym.Msg) {
 }
 
 func (s *Session) gateInfoMsg(p *Player, gid, typ int) xym.Msg {
+	s.gateViewMode = typ
 	pr := p.Prog[typ]
 	return xym.Msg{"gid": gid, "type": typ, "star": pr.gateStar(gid), "times": pr.today(gid), "no_reward": gateNoLimit, "tickets": p.SweepTickets}
 }
@@ -233,7 +243,7 @@ func onStarFight(s *Session, p *Player, m xym.Msg) {
 		rw = &gamedata.RewardInfo{}
 	}
 	s.roleUpdate(func(ro *Role) bool { ro.Cash += int32(rw.Cash()); ro.AddExp(int32(rw.MExp())); return true },
-		"cash", "grade", "exp", "next_exp")
+		"cash", "grade", "exp", "next_exp", "xiuwei", "xgrade")
 	drops := &bagDelta{}
 	p.rollDrops(rw, rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(p.UID))), drops)
 	p.saveLog(s)

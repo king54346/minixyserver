@@ -272,7 +272,7 @@ func onHuilu(s *Session, p *Player, m xym.Msg) {
 		mt.suits = []*Suit{su}
 	} else {
 		b := p.bookByPos(int(m["magic_pos"].(int64)))
-		if b == nil || b.Locked || p.bookWorn(b.Pos) || magicStar(b.Type) != 5 {
+		if b == nil || b.Locked || p.bookWorn(b.Pos) || magicStar(b.Type) != 5 || isBookMaterial(b.Type) {
 			s.sendMsg("只能放入没穿戴、没锁定的五星法术。")
 			reply()
 			return

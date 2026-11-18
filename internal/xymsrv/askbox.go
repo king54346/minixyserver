@@ -24,14 +24,16 @@ func (s *Session) askBox(text string, words []string, fn func(opt int)) {
 	s.SendExt("ETC_PTO.S_ASK_BOX", xym.Msg{"text": text, "session": s.askSeq, "opt": opts, "type": 0})
 }
 
-// 背包扩充（护法 / 装备 / 法术列表「+」→ TASK_PTO.C_BUY_BAG{type 1/2/3}）：先弹确认框，购买后上限 +5，
-// 回 S_SEND_BAG_COUNT。护法照官方确认框「花费300元宝扩充5个护法位置？」；装备、法术按用户要求：第一次 100 元宝，
-// 之后每次 ×3，上限 600 格。
+// 背包扩充（护法列表「+」、装备 / 法术背包满时的提示框 → TASK_PTO.C_BUY_BAG{type 1/2/3}）：先弹确认框，购买后回
+// S_SEND_BAG_COUNT。护法照官方确认框「花费300元宝扩充5个护法位置？」；装备、法术（用户 2026-10-30：原来每次 ×3 太贵、
+// 格子太少）每次 100 元宝扩 20 格，上限 1000 格。装备 / 法术背包满了掉落改寄邮件时发 S_BAG_FULL{type, state 1}，
+// 客户端弹「你的装备栏已满，请扩充…」，点扩充就是 C_BUY_BAG（logic/map_mgr.lua S_BAG_FULL）。
 const (
 	bagExpandStep = 5
 	bagExpandGold = 300
+	gearBagStep   = 20
 	gearBagGold   = 100
-	gearBagMax    = 600
+	gearBagMax    = 1000
 )
 
 // bagExpandPrice 是第 t 种背包下一次扩充的元宝价（0 = 已到上限）。
@@ -42,13 +44,7 @@ func (p *Player) bagExpandPrice(t int) int32 {
 	if p.BagLimit[t] >= gearBagMax {
 		return 0
 	}
-	price := int64(gearBagGold)
-	for range p.BagBuys[t] {
-		if price *= 3; price > 2_000_000_000 {
-			return 2_000_000_000
-		}
-	}
-	return int32(price)
+	return gearBagGold
 }
 
 var bagNames = map[int]string{bagPet: "护法", bagSuit: "装备", bagBook: "法术"}
@@ -75,7 +71,7 @@ func init() {
 		}
 		next := cur + bagExpandStep
 		if t != bagPet {
-			next = min(next, gearBagMax)
+			next = min(cur+gearBagStep, gearBagMax)
 		}
 		text := fmt.Sprintf("花费#G%d元宝#n扩充%d个%s位置？#r当前%s上限%d，扩充后为%d。", price, next-cur, name, name, cur, next)
 		s.askBox(text, []string{"购买", "关闭"}, func(opt int) {

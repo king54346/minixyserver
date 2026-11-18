@@ -78,45 +78,48 @@ type Dongfus struct {
 
 // Dongfu 是一个洞府。
 type Dongfu struct {
-	ID      int32       `json:"id"`
-	Name    string      `json:"name"`
-	Slogan  string      `json:"slogan"`
-	Icon    int32       `json:"icon"`
-	Lv      int32       `json:"lv"`
-	Gold    int32       `json:"gold"` // 洞府元宝
-	Yuanqi  int32       `json:"yuanqi"`
-	Lingqi  int32       `json:"lingqi"`
-	Members []*DFMember `json:"members"`
-	Applies []*DFApply  `json:"applies,omitempty"`
-	History []DFLog     `json:"history,omitempty"`
-	Created int64       `json:"created"`
-
 	Builds     map[string]*DFBuild   `json:"builds,omitempty"` // 六座修为建筑（dongfu_build.go）
+	Shop       *DFShop               `json:"shop,omitempty"`   // 仙灵铺（dongfu_shop.go）
+	Invade     *DFInvade             `json:"invade,omitempty"` // 魔潮入侵（dongfu_invade.go）
+	War        *DFWar                `json:"war,omitempty"`    // 争夺（dongfu_gank.go）
+	Battle     *DFBattle             `json:"battle,omitempty"` // 破阵（dongfu_battle.go）
+	CaveUsers  map[int32]*DFCaveUser `json:"cave_users,omitempty"`
+	Name       string                `json:"name"`
+	Slogan     string                `json:"slogan"`
 	CurXiuwei  string                `json:"cur_xiuwei,omitempty"`
+	ExtraDay   string                `json:"extra_day,omitempty"`
+	InvadeDay  string                `json:"invade_day,omitempty"`
+	Members    []*DFMember           `json:"members"`
+	Applies    []*DFApply            `json:"applies,omitempty"`
+	History    []DFLog               `json:"history,omitempty"`
+	Created    int64                 `json:"created"`
+	LingqiAt   int64                 `json:"lingqi_at,omitempty"`
+	Extra      int                   `json:"extra,omitempty"`  // 今天额外发布的建设任务数
+	Guards     [3]int32              `json:"guards,omitempty"` // 人界 / 地界 / 天界守卫（dongfu_guard.go）
+	ID         int32                 `json:"id"`
+	Icon       int32                 `json:"icon"`
+	Lv         int32                 `json:"lv"`
+	Gold       int32                 `json:"gold"` // 洞府元宝
+	Yuanqi     int32                 `json:"yuanqi"`
+	Lingqi     int32                 `json:"lingqi"`
 	HouseLv    int32                 `json:"house_lv,omitempty"`
 	PoolLv     int32                 `json:"pool_lv,omitempty"`
-	LingqiAt   int64                 `json:"lingqi_at,omitempty"`
-	Extra      int                   `json:"extra,omitempty"` // 今天额外发布的建设任务数
-	ExtraDay   string                `json:"extra_day,omitempty"`
-	Guards     [3]int32              `json:"guards,omitempty"`  // 人界 / 地界 / 天界守卫（dongfu_guard.go）
-	Shop       *DFShop               `json:"shop,omitempty"`    // 仙灵铺（dongfu_shop.go）
-	Invade     *DFInvade             `json:"invade,omitempty"`  // 魔潮入侵（dongfu_invade.go）
-	War        *DFWar                `json:"war,omitempty"`     // 争夺（dongfu_gank.go）
-	Station    int32                 `json:"station,omitempty"` // 所在洞天（灵穴，dongfu_cave.go；0 = 桃花源）
-	CaveOn     bool                  `json:"cave_on,omitempty"`
-	CaveUsers  map[int32]*DFCaveUser `json:"cave_users,omitempty"`
+	Station    int32                 `json:"station,omitempty"`     // 所在洞天（灵穴，dongfu_cave.go；0 = 桃花源）
 	CaveLingqi int32                 `json:"cave_lingqi,omitempty"` // 灵穴累计得的灵气
+	CaveOn     bool                  `json:"cave_on,omitempty"`
 }
 
 type DFMember struct {
-	UID      int32  `json:"uid"`
-	Position string `json:"position"`
-	Contri   int32  `json:"contri"`         // 洞府贡献（累计）
-	Week     int32  `json:"week,omitempty"` // 本周贡献
-	WeekKey  string `json:"week_key,omitempty"`
-	Donate   string `json:"donate,omitempty"`  // 最近一次元宝捐献的日期
-	Collect  string `json:"collect,omitempty"` // 最近一次差事捐献的日期
-	Joined   int64  `json:"joined"`
+	PushMuted uint8  `json:"push_muted,omitempty"`
+	BattleOff bool   `json:"battle_off,omitempty"` // 关闭破阵自动报名（默认参与自动选取）
+	UID       int32  `json:"uid"`
+	Position  string `json:"position"`
+	Contri    int32  `json:"contri"`         // 洞府贡献（累计）
+	Week      int32  `json:"week,omitempty"` // 本周贡献
+	WeekKey   string `json:"week_key,omitempty"`
+	Donate    string `json:"donate,omitempty"`  // 最近一次元宝捐献的日期
+	Collect   string `json:"collect,omitempty"` // 最近一次差事捐献的日期
+	Joined    int64  `json:"joined"`
 }
 
 type DFApply struct {
@@ -132,7 +135,7 @@ type DFLog struct {
 
 func openDongfus(st store.Store) *Dongfus {
 	d := &Dongfus{st: st}
-	loadGlobal(st, dongfuUID, d, "dongfu")
+	loadGlobal(st, globalDongfu, d)
 	if d.List == nil {
 		d.List = map[int32]*Dongfu{}
 	}
@@ -142,6 +145,21 @@ func openDongfus(st store.Store) *Dongfus {
 	if d.NextID == 0 {
 		d.NextID = 1
 	}
+	// 灵穴守位只允许真实玩家：老存档里未被玩家占领（Dongfu=0）的假玩家守位一律清空。
+	migrated := false
+	for _, c := range d.Caves {
+		for _, ps := range c.Gates {
+			for k := range ps {
+				if ps[k].Dongfu == 0 && isFakeUID(ps[k].UID) {
+					ps[k] = DFCavePos{}
+					migrated = true
+				}
+			}
+		}
+	}
+	if migrated {
+		saveGlobal(st, globalDongfu, d)
+	}
 	return d
 }
 
@@ -150,7 +168,7 @@ func (d *Dongfus) do(fn func() bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if fn() {
-		saveGlobal(d.st, dongfuUID, d, "dongfu")
+		saveGlobal(d.st, globalDongfu, d)
 	}
 }
 
@@ -291,16 +309,20 @@ func dfJobInfo(me *DFMember) xym.Msg {
 	if me.Collect == today() {
 		collect = 0
 	}
-	return xym.Msg{"week_contribute": me.week(), "collection_left_times": collect, "xiuwei_task_type": 0,
+	msg := xym.Msg{"week_contribute": me.week(), "collection_left_times": collect, "xiuwei_task_type": 0,
 		"xiuwei_task_left_times": 0, "xiuwei_task_need_type": 0, "xiuwei_task_vs_usernum": 0, "xiuwei_task_vs_name": "",
 		"xiuwei_task_vs_icon": 0, "xiuwei_task_vs_fight_point": 0, "xiuwei_task_fight_cd": 0, "xiuwei_task_need_kind": "",
 		"invade_left_time": -1, "invade_monster_left": 0, "invade_monster_leader_left": 0, "invade_monster_governor_left": 0,
 		"invade_monster_boss_hp": 0, "invade_status": 3, "invade_finish_time": 0, "invade_open_left_time": 0,
 		"invade_open_hour": 0, "gank_dongfu_icon": 0, "gank_dongfu_name": "", "gank_server_name": "", "gank_status": 0,
 		"gank_side": 0, "gank_type": 0, "gank_left_time": 0, "gank_finish_time": 0, "gank_revenge_add": 0,
-		"push_msg_xiuwei_task": 1, "push_msg_dongfu_upgrade": 1, "push_msg_monster_invade": 1, "push_msg_gank_attack": 1,
-		"push_msg_gank_defense": 1, "push_msg_battle": 1, "push_msg_cave": 1, "cave_game_times": -1,
-		"battle": []xym.Msg{}, "territory": []xym.Msg{}}
+		"cave_game_times": -1,
+		"battle":          []xym.Msg{}, // 领土帮战：给一条「进行中」的事件，客户端差事页才会出现入口
+		"territory":       []xym.Msg{{"open_left_time": 0, "desc": "领土帮战现已开放，点击进入战场。", "is_open": 1}}}
+	for i, field := range dfPushFields {
+		msg[field] = 1 - int(me.PushMuted>>i&1)
+	}
+	return msg
 }
 
 // pushDongfuLogin：在洞府里的玩家登录时推职位与修为（抓包顺序）。

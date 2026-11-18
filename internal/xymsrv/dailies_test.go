@@ -66,7 +66,7 @@ func TestJoke(t *testing.T) {
 		if m := got["ETC_PTO.S_OPEN_JOKE"]; num(m, "times") != want || num(m, "finish") != 1 {
 			t.Fatalf("day %d: %v", i, m)
 		}
-		if r := got["ETC_PTO.S_REWARD_MSG"]; want < jokeMax && num(r, "cash") != 2000*want {
+		if r := got["ETC_PTO.S_REWARD_MSG"]; num(r, "gold") != jokeGold {
 			t.Fatalf("day %d reward %v", i, r)
 		}
 		if want == jokeMax && got["ITEM_PTO.S_UPDATE_SUIT"] == nil {
@@ -156,7 +156,7 @@ func TestMijing(t *testing.T) {
 	}
 
 	c.sendExt("QUEST_PTO.C_START_QUEST_FIGHT", xym.Msg{"qid": 101}) // 金沙湾今天不开
-	c.expectMsg(t, "没有开放")
+	c.expectMsgExt(t, "没有开放")
 	suits := len(p.Suits)
 	for i := 1; i <= mijingTimes; i++ {
 		c.sendExt("QUEST_PTO.C_START_QUEST_FIGHT", xym.Msg{"qid": 303})
@@ -172,7 +172,7 @@ func TestMijing(t *testing.T) {
 		t.Fatalf("suits %d -> %d", suits, len(p.Suits))
 	}
 	c.sendExt("QUEST_PTO.C_START_QUEST_FIGHT", xym.Msg{"qid": 303})
-	c.expectMsg(t, "次数已用完")
+	c.expectMsgExt(t, "次数已用完")
 }
 
 // TestTree：种树、浇灌升级、除妖、成熟收获元宝（回到 1 级未种）、一天只能种一棵、摇钱树林。
@@ -190,7 +190,7 @@ func TestTree(t *testing.T) {
 		t.Fatalf("plant %v", m)
 	}
 	p.mu.Lock()
-	p.Tree.Bug = 1
+	p.Tree.Bug = 2
 	p.addItem(treeDew, 6)
 	p.mu.Unlock()
 	c.sendExt("TREE_PTO.C_WATERING_TREE", nil) // 有妖虱不能培养
@@ -199,8 +199,14 @@ func TestTree(t *testing.T) {
 	c.sendExt("TREE_PTO.C_FIGHT_BUG", xym.Msg{"usernum": p.UID})
 	c.expectExt("FIGHT_PTO.S_FIGHT_RECORD")
 	c.expectExt("TREE_PTO.S_FIGHT_WIN")
-	if m := c.expectExt("TREE_PTO.S_OPEN_PLANT"); num(m, "bug") != 0 {
+	if m := c.expectExt("TREE_PTO.S_OPEN_PLANT"); num(m, "bug") != 1 {
 		t.Fatalf("bug %v", m)
+	}
+	c.sendExt("TREE_PTO.C_FIGHT_BUG", xym.Msg{"usernum": p.UID})
+	c.expectExt("FIGHT_PTO.S_FIGHT_RECORD")
+	c.expectExt("TREE_PTO.S_FIGHT_WIN")
+	if m := c.expectExt("TREE_PTO.S_OPEN_PLANT"); num(m, "bug") != 0 {
+		t.Fatalf("second bug %v", m)
 	}
 	c.sendExt("TREE_PTO.C_WATERING_TREE", nil)
 	if m := c.until(t, "TREE_PTO.S_OPEN_PLANT")["TREE_PTO.S_OPEN_PLANT"]; num(m, "level") != 2 || p.itemCount(treeDew) != 0 {
@@ -325,7 +331,7 @@ func TestTreeWoodPersist(t *testing.T) {
 		t.Fatal("planted tree not in the wood")
 	}
 	rows := map[int32]*treeRow{}
-	loadGlobal(srv.players.st, treeUID, &rows, "tree wood")
+	loadGlobal(srv.players.st, globalTree, &rows)
 	if r := rows[p.UID]; r == nil || !r.Planted {
 		t.Fatalf("not persisted: %+v", rows)
 	}

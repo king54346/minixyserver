@@ -6,8 +6,8 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +19,7 @@ import (
 
 // 账号规则照 offline_probe.lua 的注释（服务端 backend/accounts.py 的口径）：
 //   - 账号名 1-32 个字符，密码 1-64 个字符，否则 101；
-//   - 安全码 4-16 位字母或数字，不分大小写，不能和密码一样；
+//   - 安全码 8-16 位，必须同时含字母和数字，不分大小写，不能和密码一样；
 //   - 登录：没有账号 102，密码错 1。
 //
 // 「一台设备只能注册一个号」「按 IP 限量」属于原服运营规则，本地服不实现（见 docs）。
@@ -28,7 +28,25 @@ const (
 	maxPwd = 64
 )
 
-var secCodeRe = regexp.MustCompile(`^[A-Za-z0-9]{4,16}$`)
+const sidTTL = 24 * time.Hour
+
+func validSecCode(code string) bool {
+	if len(code) < 8 || len(code) > 16 {
+		return false
+	}
+	letter, digit := false, false
+	for _, c := range code {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			letter = true
+		case c >= '0' && c <= '9':
+			digit = true
+		default:
+			return false
+		}
+	}
+	return letter && digit
+}
 
 // Account 与 store.Account 字段逐一对应（存取时直接做类型转换）。
 type Account struct {
@@ -44,18 +62,21 @@ type Account struct {
 
 // Accounts 是全部账号（内存缓存，修改后立即写入 store）。
 type Accounts struct {
-	mu      sync.Mutex
-	st      store.Store
-	NextUID int32
-	ByURS   map[string]*Account // key: 小写账号名
+	mu           sync.Mutex
+	sidIssued    map[int32]time.Time // 仅内存：重启后已有 sid 全部失效
+	st           store.Store
+	NextUID      int32
+	ByURS        map[string]*Account // key: 小写账号名
+	registration RegistrationSettings
 }
 
 var (
-	ErrInvalid     = errors.New("invalid account or password")
-	ErrNameTaken   = errors.New("account name taken")
-	ErrNoAccount   = errors.New("no such account")
-	ErrBadPassword = errors.New("bad password")
-	ErrBadCode     = errors.New("bad security code")
+	ErrInvalid            = errors.New("invalid account or password")
+	ErrNameTaken          = errors.New("account name taken")
+	ErrNoAccount          = errors.New("no such account")
+	ErrBadPassword        = errors.New("bad password")
+	ErrBadCode            = errors.New("bad security code")
+	ErrRegistrationClosed = errors.New("当前服务器暂未开放注册，请稍后再试。")
 )
 
 // OpenAccounts 从 st 读入全部账号。新账号 uid 从 20001 起，接在已有最大 uid 之后。
@@ -65,10 +86,27 @@ func OpenAccounts(st store.Store) (*Accounts, error) {
 		return nil, err
 	}
 	a := &Accounts{st: st, NextUID: 20001, ByURS: map[string]*Account{}}
+	a.registration.Version = 1
+	if raw, err := st.LoadGlobal("registration_settings"); err == nil {
+		if err := json.Unmarshal(raw, &a.registration); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
 	for _, x := range list {
 		acc := Account(x)
 		a.ByURS[key(acc.URS)] = &acc
 		a.NextUID = max(a.NextUID, acc.UID+1)
+	}
+	if data, err := st.LoadGlobal(accountUIDFloor); err == nil {
+		var next int32
+		if err := json.Unmarshal(data, &next); err != nil {
+			return nil, err
+		}
+		a.NextUID = max(a.NextUID, next)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, err
 	}
 	return a, nil
 }
@@ -103,11 +141,14 @@ func (a *Accounts) Register(urs, pwd, code string) (*Account, error) {
 	if !validNamePwd(urs, pwd) {
 		return nil, ErrInvalid
 	}
-	if code != "" && (!secCodeRe.MatchString(code) || strings.EqualFold(code, pwd)) {
+	if code != "" && (!validSecCode(code) || strings.EqualFold(code, pwd)) {
 		return nil, ErrBadCode
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.registration.Disabled {
+		return nil, ErrRegistrationClosed
+	}
 	k := key(urs)
 	if _, ok := a.ByURS[k]; ok {
 		return nil, ErrNameTaken
@@ -151,8 +192,17 @@ func (a *Accounts) NewSID(acc *Account) (string, error) {
 	_, _ = rand.Read(b)
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	old := acc.SID
 	acc.SID = hex.EncodeToString(b)
-	return acc.SID, a.saveLocked(acc)
+	if err := a.saveLocked(acc); err != nil {
+		acc.SID = old
+		return "", err
+	}
+	if a.sidIssued == nil {
+		a.sidIssued = make(map[int32]time.Time)
+	}
+	a.sidIssued[acc.UID] = time.Now()
+	return acc.SID, nil
 }
 
 // BySID 断线重连（帧 6）：uid 与 sid 都对上才算。
@@ -160,7 +210,8 @@ func (a *Accounts) BySID(uid uint32, sid string) *Account {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for _, acc := range a.ByURS {
-		if uint32(acc.UID) == uid && acc.SID != "" &&
+		issued := a.sidIssued[acc.UID]
+		if !issued.IsZero() && time.Now().Before(issued.Add(sidTTL)) && uint32(acc.UID) == uid && acc.SID != "" &&
 			subtle.ConstantTimeCompare([]byte(acc.SID), []byte(sid)) == 1 {
 			return acc
 		}
@@ -174,7 +225,7 @@ func (a *Accounts) Recover(urs, code, newPwd string) (uint32, error) {
 	defer a.mu.Unlock()
 	acc, ok := a.ByURS[key(urs)]
 	if !ok {
-		return 0, ErrNoAccount
+		return 0, ErrBadCode
 	}
 	if !checkCode(acc, code) {
 		return 0, ErrBadCode
@@ -187,5 +238,6 @@ func (a *Accounts) Recover(urs, code, newPwd string) (uint32, error) {
 	}
 	salt, _ := hex.DecodeString(acc.PwdSalt)
 	acc.PwdHash = hashPwd(salt, newPwd)
+	delete(a.sidIssued, acc.UID) // 改密立即撤销旧重连凭证
 	return xym.RecoverDone, a.saveLocked(acc)
 }

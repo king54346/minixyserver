@@ -44,19 +44,29 @@ const (
 	dyMark    = 7 // 未翻开（客户端用，服务端不发）
 
 	dyGrids        = 16
+	dyGridCols     = 4 // 每排 4 格，共 4x4
 	dyRatioStep    = 25
 	dyRatioMax     = 200
 	dyFreeRelive   = 3
 	dyReliveGold   = 2
 	dyEscapeGold   = 50
 	dyEscapeItem   = 10082 // 遁地符
-	dySpecialCost  = 50    // 重置特殊妖窟的元宝
+	dySpecialCost  = 50    // 重置特殊妖窟的元宝（已被每日次数计费取代，保留常量便于回滚）
+	dyDayFree      = 1     // 每天免费进入妖窟次数
+	dyDayPaid      = 10    // 每天付费进入妖窟次数
+	dyDayLimit     = dyDayFree + dyDayPaid
+	dySweepTPoint  = 10 // 扫荡（一键荡妖）固定体力
+	dySweepGold    = 5  // 扫荡固定元宝
 	dyStateFail    = 1
 	dyStateSuccess = 2
 )
 
 // dyLing 是各类格子的功。
 var dyLing = map[int]int{dyMonster: 16, dyBox: 32, dyLeader: 48, dyBoss: 96}
+
+// dyExpP/dyExpM 是各格子给的护法经验 / 道行经验（2026-10-30 要求荡妖加经验，按「功」的 5 倍 / 2 倍给）。
+var dyExpP = map[int]int{dyMonster: 80, dyBox: 160, dyLeader: 240, dyBoss: 480}
+var dyExpM = map[int]int{dyMonster: 32, dyBox: 64, dyLeader: 96, dyBoss: 192}
 
 // DangyaoState 是荡妖存档（Player.Dangyao）。
 type DangyaoState struct {
@@ -65,12 +75,15 @@ type DangyaoState struct {
 	Ratio  int    `json:"ratio"` // 妖气（S_SEND_BAODI_RATIO.base_ratio）
 	Day    string `json:"day"`   // 每日免费复活次数的日期
 	Free   int    `json:"free"`
-	Dead   []int  `json:"dead,omitempty"` // 阵亡的出战位
-	Fights int    `json:"fights"`         // 战报编号
-	Run    *dyRun `json:"run,omitempty"`  // 进行中的一轮（nil = 没有，需重置妖窟）
+	Dead   []int  `json:"dead,omitempty"`  // 阵亡的出战位
+	Fights int    `json:"fights"`          // 战报编号
+	DayN   int    `json:"day_n,omitempty"` // 今天已进入妖窟的次数（每天重置）
+	Run    *dyRun `json:"run,omitempty"`   // 进行中的一轮（nil = 没有，需重置妖窟）
 	// Shop 是功德商店当前上架：商店类型 -> 商品（重置妖窟时重新上架）。
 	Shop    map[int][]*dyShopSlot `json:"shop,omitempty"`
-	Special bool                  `json:"special,omitempty"` // 上一次重置的是特殊妖窟（上架权重用）
+	ShopLv  int                   `json:"shop_lv,omitempty"`  // 上次上架时的称号等级（升级后打开商店自动重上架）
+	ShopVer int                   `json:"shop_ver,omitempty"` // 上架规则版本：规则调整后旧商店自动重上架
+	Special bool                  `json:"special,omitempty"`  // 上一次重置的是特殊妖窟（上架权重用）
 }
 
 type dyRun struct {
@@ -87,6 +100,7 @@ type dyFloor struct {
 type dyGrid struct {
 	Type int  `json:"t"`
 	Open bool `json:"o,omitempty"`
+	Dead bool `json:"d,omitempty"` // 头目/魔王已击败（打赢后 Type 变空地，靠它判断本层头目是否清完）
 }
 
 type dyShopSlot struct {
@@ -100,7 +114,7 @@ func (p *Player) dy() *DangyaoState {
 	}
 	d := p.Dangyao
 	if today := time.Now().Format("2006-01-02"); d.Day != today {
-		d.Day, d.Free = today, dyFreeRelive
+		d.Day, d.Free, d.DayN = today, dyFreeRelive, 0
 	}
 	return d
 }
@@ -133,6 +147,14 @@ func (d *DangyaoState) gongdeLevel() int {
 	return lv
 }
 
+// dyRefreshGold 是今天第 n 次（0 起）进入妖窟的元宝价：第 1 次免费，之后 30/50/70/90... 每次 +20。
+func dyRefreshGold(n int) int {
+	if n < dyDayFree {
+		return 0
+	}
+	return 30 + (n-dyDayFree)*20
+}
+
 func (d *DangyaoState) gongdeMax() int {
 	ls := gamedata.Dangyao.Levels
 	if lv := d.gongdeLevel(); lv-1 < len(ls) {
@@ -144,26 +166,40 @@ func (d *DangyaoState) gongdeMax() int {
 // newFloor 生成一层：入口（第 1 层空地，其后是上层入口）已翻开，其余待翻开。
 func newFloor(floor, floors int, boss bool, rng *rand.Rand) *dyFloor {
 	f := &dyFloor{}
-	idx := rng.Perm(dyGrids)
+	// 上一层通道固定在**第一排**（列随机），下一层通道固定在**最后一排**（列随机）。
+	up := rng.IntN(dyGridCols)
+	if floor > 1 {
+		f.Grids[up].Type = dyUp
+	} else {
+		f.Grids[up].Type = dyBlank
+	}
+	f.Grids[up].Open = true
+	if floor < floors {
+		f.Grids[dyGrids-dyGridCols+rng.IntN(dyGridCols)].Type = dyDown
+	}
+	rest := make([]int, 0, dyGrids)
+	for i := range f.Grids {
+		if i == up {
+			continue
+		}
+		if floor < floors && f.Grids[i].Type == dyDown {
+			continue
+		}
+		rest = append(rest, i)
+	}
+	rng.Shuffle(len(rest), func(a, b int) { rest[a], rest[b] = rest[b], rest[a] })
 	k := 0
 	put := func(t int) {
-		f.Grids[idx[k]].Type = t
-		k++
+		if k < len(rest) {
+			f.Grids[rest[k]].Type = t
+			k++
+		}
 	}
-	entrance := idx[0]
-	if floor > 1 {
-		put(dyUp)
-	} else {
-		put(dyBlank)
-	}
-	f.Grids[entrance].Open = true
-	if floor < floors {
-		put(dyDown)
-	}
+	// 每层两个头目/精英；魔王（不算头目）只在最后一层额外出现。
+	put(dyLeader)
+	put(dyLeader)
 	if boss && floor == floors {
 		put(dyBoss)
-	} else {
-		put(dyLeader)
 	}
 	for range 3 + rng.IntN(3) {
 		put(dyMonster)
@@ -242,24 +278,74 @@ func (p *Player) dyTeam(dead []int) ([]*battle.Fighter, []*Pet) {
 // dyRollShop 是重新上架商店的函数（测试可换成全部上架）。
 var dyRollShop = (*DangyaoState).rollShop
 
-// rollShop 重新上架功德商店（每件按权重 ‰ 概率上架，限购重置）。
+// rollShop 重新上架功德商店：每个殿按等级保底上架 2+称号等级 件（不超过该殿可选池），
+// 按权重无放回抽选；特殊妖窟的权重加 Weight[2]（稀有商品更容易出现）。
+// dyShopVer 是商店上架规则版本，改了上架规则就 +1，旧商店会在下次打开时自动重上架。
+const dyShopVer = 2
+
 func (d *DangyaoState) rollShop(special bool, rng *rand.Rand) {
 	d.Special = special
 	d.Shop = map[int][]*dyShopSlot{}
 	lv := d.gongdeLevel()
-	for i := range gamedata.Dangyao.Shop {
-		it := &gamedata.Dangyao.Shop[i]
-		if it.Need > lv {
-			continue
+	d.ShopLv = lv
+	d.ShopVer = dyShopVer
+	for t := 1; t <= 3; t++ {
+		pool := []*gamedata.DangyaoShopItem{}
+		for i := range gamedata.Dangyao.Shop {
+			it := &gamedata.Dangyao.Shop[i]
+			if it.Type == t && it.Need <= lv {
+				pool = append(pool, it)
+			}
 		}
-		w := it.Weight[0]
-		if special {
-			w += it.Weight[2]
+		want := min(len(pool), 2+lv)
+		chosen := make([]*dyShopSlot, 0, want)
+		// 明王（Lv5）专属保底：need>=4 的商品（淬元沙）100% 上架；菩萨及以下仍按权重随机。
+		for i := 0; i < len(pool) && len(chosen) < want; {
+			if lv >= 5 && pool[i].Need >= 4 {
+				chosen = append(chosen, &dyShopSlot{Pos: pool[i].Pos, Left: pool[i].Left})
+				pool = append(pool[:i], pool[i+1:]...)
+				continue
+			}
+			i++
 		}
-		if rng.IntN(1000) < w {
-			d.Shop[it.Type] = append(d.Shop[it.Type], &dyShopSlot{Pos: it.Pos, Left: it.Left})
+		for len(chosen) < want && len(pool) > 0 {
+			total := 0
+			for _, it := range pool {
+				total += dyShopWeight(it, special)
+			}
+			if total <= 0 {
+				break
+			}
+			r := rng.IntN(total)
+			acc, hit := 0, -1
+			for i, it := range pool {
+				acc += dyShopWeight(it, special)
+				if r < acc {
+					hit = i
+					break
+				}
+			}
+			if hit < 0 {
+				break
+			}
+			it := pool[hit]
+			chosen = append(chosen, &dyShopSlot{Pos: it.Pos, Left: it.Left})
+			pool = append(pool[:hit], pool[hit+1:]...)
 		}
+		d.Shop[t] = chosen
 	}
+}
+
+// dyShopWeight 是上架抽选的权重（‰）：基础权重 + 特殊妖窟加成，至少 1 避免抽不出来。
+func dyShopWeight(it *gamedata.DangyaoShopItem, special bool) int {
+	w := it.Weight[0]
+	if special {
+		w += it.Weight[2]
+	}
+	if w < 1 {
+		w = 1
+	}
+	return w
 }
 
 func dyShopItem(pos int) *gamedata.DangyaoShopItem {

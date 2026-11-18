@@ -113,18 +113,33 @@ func (srv *Server) regenLoop() {
 		if closed {
 			return
 		}
-		for _, s := range srv.onlineSessions() {
+		srv.regenOnline()
+	}
+}
+
+func (srv *Server) regenOnline() {
+	for _, s := range srv.onlineSessions() {
+		// 正在处理请求的玩家由请求路径结算体力；不要让后台任务等它，
+		// 也不要在请求的同时读写 s.role / s.player。
+		if !s.stateMu.TryLock() {
+			continue
+		}
+		func() {
+			defer s.stateMu.Unlock()
 			p := s.player
 			if p == nil || s.role == nil {
-				continue
+				return
 			}
-			p.mu.Lock()
-			if ro := srv.roles.Get(s.role.UID); ro != nil {
+			if !p.mu.TryLock() {
+				return
+			}
+			defer p.mu.Unlock()
+			if ro := srv.roles.Get(p.UID); ro != nil {
 				s.role = ro
 			}
 			s.applyRegen(p)
-			p.mu.Unlock()
-		}
+			p.role = s.role
+		}()
 	}
 }
 

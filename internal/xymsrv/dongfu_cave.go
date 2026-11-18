@@ -61,18 +61,34 @@ func (d *Dongfus) cave(station int32) *DFCave {
 	if c == nil {
 		c = &DFCave{Gates: map[int]*[cavePositions]DFCavePos{}, Scores: map[int32]int{}}
 		for g := 1; g <= caveGates; g++ {
-			var ps [cavePositions]DFCavePos
-			for k := range ps {
-				ps[k].UID = int32(ldFakeUIDBase + 50 + (int(station)*7+g*3+k)%50)
-			}
-			c.Gates[g] = &ps
+			// 守位初始为空，只由真实玩家争夺占领（灵穴不出现假玩家）。
+			c.Gates[g] = &[cavePositions]DFCavePos{}
 		}
 		d.Caves[station] = c
 	}
 	if c.Scores == nil {
 		c.Scores = map[int32]int{}
 	}
+	for _, positions := range c.Gates {
+		for i, position := range positions {
+			if isFakeUID(position.UID) {
+				positions[i] = DFCavePos{}
+			}
+		}
+	}
 	return c
+}
+
+// claimCavePos 让 uid 占领 gate/pos：一个玩家在本洞天只能占一个守位，旧守位先清空。
+func claimCavePos(c *DFCave, uid int32, dfID int32, gate, pos int) {
+	for _, ps := range c.Gates {
+		for k := range ps {
+			if ps[k].UID == uid {
+				ps[k] = DFCavePos{}
+			}
+		}
+	}
+	c.Gates[gate][pos] = DFCavePos{UID: uid, Dongfu: dfID}
 }
 
 // owner 是占领该灵穴的洞府（同一洞府 ≥3 个守位；0 = 无）。
@@ -169,9 +185,14 @@ func (s *Session) caveStation(df *Dongfu) {
 		}
 		pl := []xym.Msg{}
 		for k, x := range ps {
-			t := 2 // 他人 / 野怪
-			if x.Dongfu == df.ID {
-				t = 1
+			// occupy_type：0 = 空位、1 = 我方洞府、2 = 其他洞府
+			// 空位必须单独给 0，否则客户端会把没人占的格子显示成「其他名额」。
+			t := 0
+			if x.UID != 0 {
+				t = 2
+				if x.Dongfu == df.ID {
+					t = 1
+				}
 			}
 			pl = append(pl, xym.Msg{"pos": k + 1, "occupy_type": t})
 		}
@@ -194,16 +215,15 @@ func (s *Session) caveGate(df *Dongfu, p *Player, gate int) xym.Msg {
 		for k, x := range ps {
 			name, icon := "", int32(0)
 			dfName, dfIcon := "野外妖怪", int32(0)
-			if isFakeUID(x.UID) {
-				f := fakeFoeCached(x.UID)
-				name, icon = f.Name, f.Icon
-			} else {
+			switch {
+			case isFakeUID(x.UID): // 老存档兼容：假玩家守位一律按空位显示
+			case x.UID != 0:
 				name, icon, _ = s.srv.roleBrief(x.UID)
 			}
 			if o := d.List[x.Dongfu]; o != nil {
 				dfName, dfIcon = o.Name, o.Icon
 			}
-			pl = append(pl, xym.Msg{"pos": k + 1, "dongfu_name": dfName, "dongfu_icon": dfIcon, "server_name": "细水长流",
+			pl = append(pl, xym.Msg{"pos": k + 1, "dongfu_name": dfName, "dongfu_icon": dfIcon, "server_name": "再续前缘",
 				"name": name, "usernum": x.UID, "vip_icon_ts": 0, "fight_point": 0})
 			_ = icon
 		}
@@ -237,21 +257,35 @@ func onCaveFight(s *Session, p *Player, m xym.Msg) {
 		case df.caveUser(s.role.UID).Times >= caveDaily && !s.spend(0, caveExtraGold):
 		default:
 			ok, occupant = true, d.cave(df.Station).Gates[gate][pos].UID
+			if occupant == 0 {
+				c := d.cave(df.Station)
+				u := df.caveUser(s.role.UID)
+				u.Times++
+				claimCavePos(c, s.role.UID, df.ID, gate, pos)
+				pts := 1
+				for _, g := range caveTargets {
+					if g == gate {
+						pts = 3
+					}
+				}
+				c.Scores[df.ID] += pts
+				u.Score++
+				df.CaveLingqi += int32(pts) * 10
+				me.contribute(1)
+				p.track(evDongfu, 1)
+				s.SendExt("DONGFU_PTO.S_SEND_CAVE_GAME_GATE_INFO", s.caveGate(df, p, gate))
+				return true
+			}
 		}
 		if !ok && df.Station != 0 {
 			s.SendExt("DONGFU_PTO.S_SEND_CAVE_GAME_GATE_INFO", s.caveGate(df, p, gate))
 		}
 		return false
 	})
-	if !ok {
+	if !ok || occupant == 0 {
 		return
 	}
-	var foe *ldFoe
-	if isFakeUID(occupant) {
-		foe = fakeFoeCached(occupant)
-	} else {
-		foe = s.srv.realFoe(occupant, p)
-	}
+	foe := s.srv.realFoe(occupant, p)
 	team1, _ := p.dyTeam(nil)
 	if foe == nil || len(foe.Team) == 0 || len(team1) == 0 {
 		s.retMsg("对方正忙，请稍后再试。")
@@ -265,7 +299,7 @@ func onCaveFight(s *Session, p *Player, m xym.Msg) {
 		u.Times++
 		c := d.cave(df.Station)
 		if res.Win && c.Gates[gate][pos].UID == occupant {
-			c.Gates[gate][pos] = DFCavePos{UID: s.role.UID, Dongfu: df.ID}
+			claimCavePos(c, s.role.UID, df.ID, gate, pos)
 			pts := 1
 			for _, g := range caveTargets {
 				if g == gate {
@@ -339,8 +373,9 @@ func init() {
 				s.sendMsg("只有府主和洞主可以报名灵穴争夺。")
 			case df.Station == 0:
 				s.sendMsg("请先把洞府迁徙到洞天（组织页「迁徙」）。")
-			default:
+			case !df.CaveOn:
 				df.CaveOn = true
+				s.srv.pushDongfuEvent(df, dfPushCave, "本洞府已开启灵穴争夺。")
 			}
 			s.caveInfo(df)
 			return true
@@ -411,7 +446,7 @@ func init() {
 				sort.Slice(rows, func(i, j int) bool { return rows[i].score > rows[j].score })
 				for i, r := range rows {
 					if o := d.List[r.id]; o != nil {
-						list = append(list, xym.Msg{"pos": i + 1, "icon": o.Icon, "name": o.Name, "server_name": "细水长流", "score": r.score})
+						list = append(list, xym.Msg{"pos": i + 1, "icon": o.Icon, "name": o.Name, "server_name": "再续前缘", "score": r.score})
 					}
 				}
 			}
